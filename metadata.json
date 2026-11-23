@@ -1,0 +1,6 @@
+{
+  "name": "경매스튜디오",
+  "description": "경매·낙찰 데이터 기반 3채널(네이버·티스토리·자체웹) SEO/GEO 블로그 자동화 및 저품질 차단 AI 파이프라인 관리 앱",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
