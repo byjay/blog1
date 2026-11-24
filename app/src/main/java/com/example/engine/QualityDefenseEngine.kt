@@ -44,6 +44,7 @@ object QualityDefenseEngine {
     private val ANSWER_LABEL_REGEX = Regex("""(?m)^\s*A([1-6])[\.\)]\s*""")
     private val BULLET_SYMBOL_REGEX = Regex("""[■◆▶★☆●◎▪▫]""")
     private val EMOJI_REGEX = Regex("""[\p{So}\p{Cn}✅🔥📌👉💡⭐🎯🚨⚡🔍🏠🏢💰]""")
+    private val METRIC_UNIT_SYMBOLS = setOf("㎡", "㎥", "㎝", "㎜", "㎞", "㏊")
     private val TITLE_BRACKET_SPAM_REGEX = Regex("""^\[(?:급매추천|추천|긴급|특급|대박|초특가|필독)[^\]]*\]\s*""")
     private val NAVER_URL_REGEX = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
 
@@ -101,7 +102,7 @@ object QualityDefenseEngine {
             )
         }
 
-        val emojiCount = EMOJI_REGEX.findAll("$title\n$bodyText").count()
+        val emojiCount = EMOJI_REGEX.findAll("$title\n$bodyText").count { it.value !in METRIC_UNIT_SYMBOLS }
         if (emojiCount > 0) {
             hits += QualityDefenseHit(
                 category = QualityDefenseCategory.EMOJI_DECORATION,
@@ -181,7 +182,9 @@ object QualityDefenseEngine {
                 cleanTitle = RegistryAndMotionEngine.buildHumanVeteranNaverTitle(auction)
             }
         }
-        cleanTitle = EMOJI_REGEX.replace(cleanTitle, "").replace(Regex("""\s{2,}"""), " ").trim()
+        cleanTitle = EMOJI_REGEX.replace(cleanTitle) { if (it.value in METRIC_UNIT_SYMBOLS) it.value else "" }
+            .replace(Regex("""\s{2,}"""), " ")
+            .trim()
 
         // 2. Replace structural AI patterns (■ bullets, Q1.~Q6.)
         cleanBody = BULLET_SYMBOL_REGEX.replace(cleanBody) { "" }
@@ -201,8 +204,8 @@ object QualityDefenseEngine {
             cleanBody = regex.replace(cleanBody, replacement)
         }
 
-        // 5. Remove decorative emojis / useless symbols
-        cleanBody = EMOJI_REGEX.replace(cleanBody, "")
+        // 5. Remove decorative emojis / useless symbols (preserving metric symbols like ㎡)
+        cleanBody = EMOJI_REGEX.replace(cleanBody) { if (it.value in METRIC_UNIT_SYMBOLS) it.value else "" }
 
         // 6. Strip direct URLs inside Naver body text
         if (channel == ChannelPlatform.NAVER) {

@@ -1,5 +1,6 @@
 package com.example.data
 
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,13 +18,14 @@ data class HttpCallResult(
     val errorMessage: String? = null
 )
 
-class CloudflareAndDdakchalApi {
-
+class CloudflareAndDdakchalApi(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(45, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
-        .build()
+        .build(),
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
+) {
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
@@ -34,7 +36,7 @@ class CloudflareAndDdakchalApi {
         minDelayMinutes: Int,
         maxDelayMinutes: Int,
         enableExternalLinkNaver: Boolean
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "${apiBase.trimEnd('/')}/api/v1/blog/generate-daily-5"
         val payload = JSONObject().apply {
             put("limit", limit)
@@ -56,7 +58,7 @@ class CloudflareAndDdakchalApi {
     suspend fun fetchSyndicationPack(
         apiBase: String,
         syncToken: String
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "${apiBase.trimEnd('/')}/api/v1/blog/syndication-pack"
         val reqBuilder = Request.Builder()
             .url(url)
@@ -71,7 +73,7 @@ class CloudflareAndDdakchalApi {
     suspend fun listCloudflareD1Databases(
         accountId: String,
         apiToken: String
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "https://api.cloudflare.com/client/v4/accounts/$accountId/d1/database"
         val req = Request.Builder()
             .url(url)
@@ -88,7 +90,7 @@ class CloudflareAndDdakchalApi {
         apiToken: String,
         sql: String,
         params: List<Any> = emptyList()
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "https://api.cloudflare.com/client/v4/accounts/$accountId/d1/database/$databaseId/query"
         val jsonBody = JSONObject().apply {
             put("sql", sql)
@@ -110,7 +112,7 @@ class CloudflareAndDdakchalApi {
         accountId: String,
         scriptName: String,
         apiToken: String
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "https://api.cloudflare.com/client/v4/accounts/$accountId/workers/scripts/$scriptName/schedules"
         val req = Request.Builder()
             .url(url)
@@ -126,7 +128,7 @@ class CloudflareAndDdakchalApi {
         scriptName: String,
         apiToken: String,
         crons: List<String>
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val url = "https://api.cloudflare.com/client/v4/accounts/$accountId/workers/scripts/$scriptName/schedules"
         val schedulesArray = JSONArray().apply {
             crons.forEach { cron ->
@@ -147,7 +149,7 @@ class CloudflareAndDdakchalApi {
         endpoint: String,
         apiKey: String,
         prompt: String
-    ): HttpCallResult = withContext(Dispatchers.IO) {
+    ): HttpCallResult = withContext(ioDispatcher) {
         val jsonBody = JSONObject().apply {
             put("model", "gpt-4o-mini")
             put(

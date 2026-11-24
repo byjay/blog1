@@ -201,8 +201,17 @@ fun DdakchalStudioApp() {
                     when (activeTab) {
                         StudioTab.DASHBOARD -> DashboardScreen(
                             uiState = uiState,
-                            onTriggerDaily5 = viewModel::triggerDaily5Generation,
-                            onInstantCreateAndStore = viewModel::instantCreateAndStoreInWarehouse,
+                            onSelectWeeklyDailyCount = viewModel::setWeeklyDailyCount,
+                            onGenerateWeeklyBatch = viewModel::generateWeeklyBatchAndSchedule,
+                            onCreateHighScoreAndAutoRegister = { viewModel.createHighScoreAndAutoRegister() },
+                            onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
+                            onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
+                            onPublishNaverDirectAndVerify = { postId, url ->
+                                viewModel.publishNaverDirectAndVerify(postId, url)
+                            },
+                            onPublishSelectedChannelsAndVerify = { postId, url ->
+                                viewModel.publishSelectedChannelsAndVerify(postId, url)
+                            },
                             onOpenWarehouse = { activeTab = StudioTab.WAREHOUSE },
                             onRunAiEvalSelected = { viewModel.evaluateSlotWithAi30Criteria() },
                             onTestBusanProfitableLand = viewModel::createAndEvaluateBusanProfitableLandTest,
@@ -213,18 +222,15 @@ fun DdakchalStudioApp() {
                                 viewModel.selectSlot(postId)
                                 activeTab = StudioTab.QA_INSPECT
                             },
-                            onScheduleSlot = viewModel::scheduleSlotWithStaggeredJitter,
-                            onRewriteSlot = viewModel::rewriteSlotToPassQa,
                             onResolveHandoff = viewModel::resolveSessionHandoff,
                             onAddCustomProperty = viewModel::addCustomCrawledPropertyAndSchedule
                         )
                         StudioTab.WAREHOUSE -> WarehouseAndVisitorDashboardScreen(
                             uiState = uiState,
-                            onInstantCreateAndStore = viewModel::instantCreateAndStoreInWarehouse,
+                            onCreateHighScoreAndAutoRegister = viewModel::createHighScoreAndAutoRegister,
+                            onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
                             onImportQueueToWarehouse = viewModel::importQueueSlotsToWarehouse,
                             onRun30PointEval = viewModel::run30PointEvaluationOnWarehouseItem,
-                            onAutoOptimizeTo95 = viewModel::autoOptimizeWarehouseArticleTo95,
-                            onRegisterIfScore95 = viewModel::registerWarehouseArticleIfScore95,
                             onDeleteWarehouseArticle = viewModel::deleteWarehouseArticle,
                             onInspectArticleInQa = { postId ->
                                 viewModel.selectSlot(postId)
@@ -242,7 +248,24 @@ fun DdakchalStudioApp() {
                             onToggleAutoQualityDefense = viewModel::toggleAutoQualityDefense,
                             onRunQualityDefense = viewModel::applyQualityDefenseToSlot,
                             onFetchNaverMarket = { postId -> viewModel.fetchNearbyMarketAndRebid(postId) },
-                            onRunLegalVerify = { postId -> viewModel.runLegalDoctrineVerification(postId) }
+                            onRunLegalVerify = { postId -> viewModel.runLegalDoctrineVerification(postId) },
+                            onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
+                            onPublishNaverDirectAndVerify = { postId, url ->
+                                viewModel.publishNaverDirectAndVerify(postId, url)
+                            },
+                            onPublishSelectedChannelsAndVerify = { postId, url ->
+                                viewModel.publishSelectedChannelsAndVerify(postId, url)
+                            },
+                            onReinvestigateFollowUp = { postId, outcome, winMan, nextDate, note ->
+                                viewModel.reinvestigatePostAuctionAndCreateFollowUp(
+                                    postId = postId,
+                                    outcomeType = outcome,
+                                    actualWinningManWon = winMan,
+                                    nextAuctionDate = nextDate,
+                                    courtNote = note
+                                )
+                            },
+                            onLegalStudyFilterChange = viewModel::setLegalStudyFilter
                         )
                         StudioTab.TEMPLATES -> TemplatesAndRulesScreen(
                             uiState = uiState,

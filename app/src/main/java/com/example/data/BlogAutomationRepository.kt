@@ -322,6 +322,22 @@ class BlogAutomationRepository(
         }
     }
 
+    suspend fun pushWeeklyBatchToD1(
+        config: ServerAutomationConfig,
+        slots: List<GeneratedPostSlot>
+    ): Pair<Int, String> {
+        if (config.cfAccountId.isBlank() || config.cfD1DatabaseId.isBlank() || config.cfApiToken.isBlank()) {
+            configStore.appendRecent7DayCorpus(slots.flatMap { s -> s.variants.values.map { it.bodyText } })
+            return 0 to "로컬 7일 주간예약 완료 (Cloudflare D1 키 미입력 · 로컬 창고 보관)"
+        }
+        var syncedCount = 0
+        slots.forEach { slot ->
+            val res = pushScheduledSlotToD1(config, slot)
+            if (res.isSuccess) syncedCount++
+        }
+        return syncedCount to "Cloudflare D1 주간예약 ${syncedCount}/${slots.size}건 동기화 완료"
+    }
+
     suspend fun queryD1QueueSummary(config: ServerAutomationConfig): Result<String> {
         if (config.cfAccountId.isBlank() || config.cfD1DatabaseId.isBlank() || config.cfApiToken.isBlank()) {
             return Result.failure(IllegalArgumentException("Cloudflare D1 설정을 먼저 입력해 주세요."))

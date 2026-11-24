@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,13 +28,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Business
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -51,13 +54,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -66,13 +69,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
-import com.example.engine.CourtEvidenceRecorder
-import com.example.engine.ProAnalysisAndPhotoGuideEngine
+import com.example.engine.Article30PointEvaluator
 import com.example.engine.QaVerificationEngine
+import com.example.engine.RegistryInfographicEngine
+import com.example.model.ChannelPlatform
 import com.example.model.GeneratedPostSlot
+import com.example.model.PostStatus
 import com.example.model.PropertyType
 import com.example.ui.StudioUiState
-import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.CloudflareContainer
 import com.example.ui.theme.CloudflareSky
 import com.example.ui.theme.CrimsonAlert
@@ -81,6 +85,7 @@ import com.example.ui.theme.EmeraldContainer
 import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.JetBrainsMonoFamily
 import com.example.ui.theme.MintSecondary
+import com.example.ui.theme.NaverGreen
 import com.example.ui.theme.NavyBackground
 import com.example.ui.theme.NavyBorder
 import com.example.ui.theme.NavyContainerHighest
@@ -91,11 +96,28 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.TistoryAmber
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DashboardScreen(
     uiState: StudioUiState,
-    onTriggerDaily5: () -> Unit,
-    onInstantCreateAndStore: () -> Unit,
+    onSelectWeeklyDailyCount: (Int) -> Unit,
+    onGenerateWeeklyBatch: (Int) -> Unit,
+    onCreateHighScoreAndAutoRegister: () -> Unit,
+    onAutoFixAndRegisterSlot: (String) -> Unit,
+    onSaveThreeChannelDestinations: (
+        naverBlogId: String,
+        naverCategoryName: String,
+        naverWorkerRelayEndpoint: String,
+        tistoryBlogUrl: String,
+        tistoryCategoryName: String,
+        ddakchalApiBase: String,
+        cloudflareBlogPath: String,
+        publishNaver: Boolean,
+        publishTistory: Boolean,
+        publishCloudflare: Boolean
+    ) -> Unit,
+    onPublishNaverDirectAndVerify: (String, String) -> Unit,
+    onPublishSelectedChannelsAndVerify: (String, String) -> Unit,
     onOpenWarehouse: () -> Unit,
     onRunAiEvalSelected: () -> Unit,
     onTestBusanProfitableLand: () -> Unit,
@@ -103,8 +125,6 @@ fun DashboardScreen(
     onApplyAiAutoFixes: (String) -> Unit,
     onSyncPack: () -> Unit,
     onInspectSlot: (String) -> Unit,
-    onScheduleSlot: (String) -> Unit,
-    onRewriteSlot: (String) -> Unit,
     onResolveHandoff: () -> Unit,
     onAddCustomProperty: (
         caseId: String,
@@ -120,11 +140,14 @@ fun DashboardScreen(
     modifier: Modifier = Modifier
 ) {
     var showAddDialog by remember { mutableStateOf(false) }
+    var showDestinationSetup by rememberSaveable { mutableStateOf(false) }
+    var showAdvancedTools by rememberSaveable { mutableStateOf(false) }
 
-    val totalSlots = uiState.slots.size
-    val passedQaCount = uiState.slots.count { it.qaReport.overallPassed }
-    val funnelEquippedCount = uiState.slots.count { slot ->
-        slot.variants.values.all { it.infographicCards.size >= 5 }
+    val selectedSlot = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }
+        ?: uiState.slots.firstOrNull()
+    val dailyCount = uiState.selectedWeeklyDailyCount.coerceIn(3, 5)
+    val queuedOrPublishedCount = uiState.slots.count {
+        it.status == PostStatus.QUEUED || it.status == PostStatus.PUBLISHED
     }
 
     LazyColumn(
@@ -134,22 +157,22 @@ fun DashboardScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // 1. 30-Year Veteran / 100+ Staff Brokerage Executive Control Header
+        // 1. Ultra-Simple Hero: Weekly 7-Day Scheduling + Instant High-Score Auto-Register
         item {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
                 color = NavySurface,
-                border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.4f))
+                border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.45f))
             ) {
                 Box {
                     Image(
                         painter = painterResource(id = R.drawable.img_studio_hero),
-                        contentDescription = "딱찰 30년 경매중개법인 총괄 관제 헤더",
+                        contentDescription = "딱찰 주간 자동 예약 스튜디오",
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .matchParentSize()
-                            .alpha(0.18f)
+                            .alpha(0.14f)
                     )
                     Box(
                         modifier = Modifier
@@ -158,7 +181,7 @@ fun DashboardScreen(
                                 Brush.verticalGradient(
                                     listOf(
                                         NavyBackground.copy(alpha = 0.55f),
-                                        NavySurface.copy(alpha = 0.95f)
+                                        NavySurface.copy(alpha = 0.96f)
                                     )
                                 )
                             )
@@ -170,159 +193,120 @@ fun DashboardScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             StatusChip(
-                                text = "EST.1996 · 30년+ · 100인+ 전담법인",
+                                text = "주 1회 예약 · 95점+ 자동등록",
                                 textColor = MintSecondary,
                                 backgroundColor = EmeraldContainer,
                                 dotColor = EmeraldPrimary
                             )
                             StatusChip(
-                                text = if (uiState.telemetry.cloudflareD1Connected) "자동화 가동" else "스튜디오 대기",
-                                textColor = if (uiState.telemetry.cloudflareD1Connected) MintSecondary else CloudflareSky,
-                                backgroundColor = if (uiState.telemetry.cloudflareD1Connected) EmeraldContainer else CloudflareContainer
+                                text = if (uiState.telemetry.ddakchalConnected) "딱찰 실연동" else "중복방지 풀 대기",
+                                textColor = if (uiState.telemetry.ddakchalConnected) MintSecondary else CloudflareSky,
+                                backgroundColor = if (uiState.telemetry.ddakchalConnected) EmeraldContainer else CloudflareContainer
                             )
                         }
 
                         Spacer(modifier = Modifier.height(10.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Filled.Business, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    text = "딱찰 경매법인 총괄 관제실",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = TextPrimary
-                                )
-                                Text(
-                                    text = "유료급 물건분석·사진가이드 무료 개방 → 딱찰 PRO 자동 전환",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
+                        Text(
+                            text = "생성 · 고득점 자동교정 · 주간예약",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "주 1회만 누르면 하루 3~5건씩(주 21~35건) 중복 없이 95점+로 교정해 예약·등록합니다.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.small)
+                                .background(NavySurfaceElevated)
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            MetricPair("예약·완료", "${queuedOrPublishedCount}건", MintSecondary, Modifier.weight(1f))
+                            MetricPair("주간 목표", "${dailyCount * 7}건/주", CloudflareSky, Modifier.weight(1f))
+                            MetricPair("창고 보관", "${uiState.warehouseArticles.size}건", TistoryAmber, Modifier.weight(1f))
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("하루 발행량 선택 (7일 분산)", style = MaterialTheme.typography.labelMedium, color = TextSecondary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(3, 4, 5).forEach { count ->
+                                FilterChip(
+                                    selected = dailyCount == count,
+                                    onClick = { onSelectWeeklyDailyCount(count) },
+                                    label = { Text("일 ${count}건 (주 ${count * 7}건)") },
+                                    modifier = Modifier.weight(1f).testTag("chip_daily_$count")
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        val quotaRatio = (uiState.telemetry.dailyQuotaUsed.toFloat() /
-                            uiState.config.dailyPostLimit.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("오늘 발행 할당", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                            Text(
-                                text = "${uiState.telemetry.dailyQuotaUsed} / ${uiState.config.dailyPostLimit}건",
-                                style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily),
-                                color = MintSecondary
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { quotaRatio },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(7.dp)
-                                .clip(RoundedCornerShape(4.dp)),
-                            color = EmeraldPrimary,
-                            trackColor = NavyContainerHighest
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Primary One-Touch Execution Button
+                        Spacer(modifier = Modifier.height(10.dp))
                         Button(
-                            onClick = onTriggerDaily5,
+                            onClick = { onGenerateWeeklyBatch(dailyCount) },
                             enabled = !uiState.isBusy,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(52.dp)
-                                .testTag("btn_generate_daily_5"),
+                                .testTag("btn_generate_weekly_7d"),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = EmeraldPrimary,
                                 contentColor = NavyBackground
                             )
                         ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Icon(Icons.Filled.CalendarMonth, contentDescription = null, modifier = Modifier.size(20.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "원터치 일일 발행 · 3채널 자동 배정",
+                                text = "딱찰 연동 7일치(${dailyCount * 7}건) 생성 · 95+ 예약",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold
                             )
                         }
 
                         Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Button(
+                            onClick = onCreateHighScoreAndAutoRegister,
+                            enabled = !uiState.isBusy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .testTag("btn_instant_highscore_register"),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CloudflareSky,
+                                contentColor = NavyBackground
+                            )
                         ) {
-                            Button(
-                                onClick = onInstantCreateAndStore,
-                                enabled = !uiState.isBusy,
-                                modifier = Modifier
-                                    .weight(1.35f)
-                                    .height(48.dp)
-                                    .testTag("btn_dashboard_instant_warehouse"),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = CloudflareSky,
-                                    contentColor = NavyBackground
-                                )
-                            ) {
-                                Icon(Icons.Filled.Inventory2, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "글 바로 생성·창고보관",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = onOpenWarehouse,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("btn_open_warehouse_shortcut"),
-                                border = BorderStroke(1.dp, TistoryAmber.copy(alpha = 0.55f))
-                            ) {
-                                Text(
-                                    "창고(${uiState.warehouseArticles.size})·로그",
-                                    color = TistoryAmber,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
+                            Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "글 1건 바로 생성 → 95+ 교정 → 선택 채널 자동 등록",
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
 
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { showAddDialog = true },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("btn_add_crawled_case"),
-                                border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.45f))
+                        if (uiState.weeklyBatchSummary != null) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Surface(
+                                color = NavyBackground,
+                                shape = MaterialTheme.shapes.small,
+                                border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Icon(Icons.Filled.AddCircle, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("신규 물건 추가", color = MintSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            }
-                            OutlinedButton(
-                                onClick = onSyncPack,
-                                enabled = !uiState.isBusy,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .height(48.dp)
-                                    .testTag("btn_sync_syndication"),
-                                border = BorderStroke(1.dp, CloudflareSky.copy(alpha = 0.45f))
-                            ) {
-                                Icon(Icons.Filled.CloudSync, contentDescription = null, tint = CloudflareSky, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("서버 동기화", color = CloudflareSky, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    text = uiState.weeklyBatchSummary.summaryText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MintSecondary,
+                                    modifier = Modifier.padding(10.dp)
+                                )
                             }
                         }
                     }
@@ -330,94 +314,168 @@ fun DashboardScreen(
             }
         }
 
-        // 2. Core 3 Executive KPIs (At-a-Glance)
+        // 2. Compact 3-Channel Destination Bar (Expandable inline)
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                ExecutiveKpiCard(
-                    label = "오늘 물건 큐",
-                    value = "${totalSlots}건",
-                    sub = "한도 ${uiState.config.dailyPostLimit}건",
-                    accent = CloudflareSky,
-                    modifier = Modifier.weight(1f)
-                )
-                ExecutiveKpiCard(
-                    label = "저품질 안전검수",
-                    value = "$passedQaCount/$totalSlots",
-                    sub = if (passedQaCount == totalSlots) "전원 PASS" else "교정 필요",
-                    accent = if (passedQaCount == totalSlots) MintSecondary else TistoryAmber,
-                    modifier = Modifier.weight(1f)
-                )
-                ExecutiveKpiCard(
-                    label = "PRO 무료·전환",
-                    value = if (uiState.proFunnel.funnelEnabled && funnelEquippedCount == totalSlots) "100%" else "${funnelEquippedCount}건",
-                    sub = "사진가이드+CTA",
-                    accent = TistoryAmber,
-                    modifier = Modifier.weight(1f)
-                )
+            StudioCard(borderColor = NaverGreen.copy(alpha = 0.4f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("등록 채널 3곳 연결 상태", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                        val nvLabel = uiState.config.naverBlogId.ifBlank { "네이버 미입력" }
+                        val tsLabel = uiState.config.tistoryBlogUrl.ifBlank { "티스토리 미입력" }
+                        Text(
+                            text = "네이버($nvLabel) · 티스토리($tsLabel) · 자체웹",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = { showDestinationSetup = !showDestinationSetup },
+                        modifier = Modifier
+                            .height(48.dp)
+                            .testTag("btn_toggle_3channel_setup")
+                    ) {
+                        Text(if (showDestinationSetup) "접기" else "등록처 입력")
+                    }
+                }
+
+                AnimatedVisibility(visible = showDestinationSetup && selectedSlot != null) {
+                    if (selectedSlot != null) {
+                        Column(modifier = Modifier.padding(top = 12.dp)) {
+                            ThreeChannelDestinationAndNaverVerifyCard(
+                                slot = selectedSlot,
+                                config = uiState.config,
+                                report = uiState.publishVerificationReport,
+                                isBusy = uiState.isBusy,
+                                onSaveDestinations = onSaveThreeChannelDestinations,
+                                onPublishNaverDirectAndVerify = { url ->
+                                    onPublishNaverDirectAndVerify(selectedSlot.postId, url)
+                                },
+                                onPublishSelectedChannelsAndVerify = { url ->
+                                    onPublishSelectedChannelsAndVerify(selectedSlot.postId, url)
+                                }
+                            )
+                        }
+                    }
+                }
             }
         }
 
-        // 2.5 AI 30-item SEO/GEO Scoring & <95 Auto-Fix Suggestions Card + Busan <50M Land Test
-        item {
-            val activeCaseId = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }?.auctionCase?.caseId
-                ?: uiState.slots.firstOrNull()?.auctionCase?.caseId
-            AiSeoGeoEvaluatorDashboardCard(
-                selectedCaseId = activeCaseId,
-                aiEvalState = uiState.aiEvalState,
-                isBusy = uiState.isBusy,
-                onRunAiEvalSelected = onRunAiEvalSelected,
-                onTestBusanProfitableLand = onTestBusanProfitableLand,
-                onTestLowScoreDraft = onTestLowScoreDraft,
-                onApplyAiAutoFixes = onApplyAiAutoFixes
-            )
-        }
-
-        // Active CAPTCHA / 2FA handOff Alert (only shown when needed)
+        // Active CAPTCHA / 2FA handOff Alert (only when triggered)
         if (!uiState.activeHandoffAlert.isNullOrBlank()) {
             item {
                 StudioCard(borderColor = CrimsonAlert, containerColor = CrimsonContainer) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Filled.Warning, contentDescription = "보안문자 중단 경보", tint = CrimsonAlert)
+                        Icon(Icons.Filled.Warning, contentDescription = "세션 중단 경보", tint = CrimsonAlert)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("계정 보호 자동 일시정지 (수동 1회 확인 필요)", style = MaterialTheme.typography.titleSmall, color = CrimsonAlert)
+                        Text("계정 보호 일시정지 (세션 확인 필요)", style = MaterialTheme.typography.titleSmall, color = CrimsonAlert)
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(uiState.activeHandoffAlert, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
                     Spacer(modifier = Modifier.height(10.dp))
                     Button(
                         onClick = onResolveHandoff,
-                        modifier = Modifier
-                            .height(48.dp)
-                            .testTag("btn_resolve_handoff"),
+                        modifier = Modifier.height(48.dp).testTag("btn_resolve_handoff"),
                         colors = ButtonDefaults.buttonColors(containerColor = CrimsonAlert)
                     ) {
                         Icon(Icons.Filled.Security, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("세션 확인 완료 · 발행 재개")
+                        Text("세션 복구")
                     }
                 }
             }
         }
 
-        // 3. Simple Executive Queue List
+        // 3. Clean Queue List (Only essentials visible)
         item {
             SectionHeader(
-                title = "오늘의 자동 발행 물건 (${uiState.slots.size}건)",
-                subtitle = "1순위 자체웹 → 2순위 티스토리 → 3순위 네이버 시간차 발행"
+                title = "자동 예약 · 등록 목록 (${uiState.slots.size}건)",
+                subtitle = "일일 ${dailyCount}건 분산 · 95점+ 통과 원고만 등록"
             )
         }
 
         items(uiState.slots, key = { it.postId }) { slot ->
-            SimpleExecutiveSlotCard(
+            SimpleQueueRowCard(
                 slot = slot,
-                funnelEnabled = uiState.proFunnel.funnelEnabled,
-                onInspect = { onInspectSlot(slot.postId) },
-                onSchedule = { onScheduleSlot(slot.postId) },
-                onRewrite = { onRewriteSlot(slot.postId) }
+                config = uiState.config,
+                proFunnel = uiState.proFunnel,
+                isBusy = uiState.isBusy,
+                onRegisterNow = { onAutoFixAndRegisterSlot(slot.postId) },
+                onInspect = { onInspectSlot(slot.postId) }
             )
+        }
+
+        // 4. Collapsible Advanced Tools (Hidden by default to keep screen ultra-simple)
+        item {
+            OutlinedButton(
+                onClick = { showAdvancedTools = !showAdvancedTools },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .testTag("btn_toggle_advanced_dashboard")
+            ) {
+                Icon(
+                    imageVector = if (showAdvancedTools) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(if (showAdvancedTools) "고급 분석 · 수동 추가 도구 접기" else "고급 분석 · AI 채점 · 수동 물건 추가 열기")
+            }
+
+            AnimatedVisibility(visible = showAdvancedTools) {
+                Column(
+                    modifier = Modifier.padding(top = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { showAddDialog = true },
+                            modifier = Modifier.weight(1f).height(48.dp).testTag("btn_add_crawled_case")
+                        ) {
+                            Icon(Icons.Filled.AddCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("물건 직접 추가", maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = onSyncPack,
+                            enabled = !uiState.isBusy,
+                            modifier = Modifier.weight(1f).height(48.dp).testTag("btn_sync_syndication")
+                        ) {
+                            Icon(Icons.Filled.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("딱찰 동기화", maxLines = 1)
+                        }
+                        OutlinedButton(
+                            onClick = onOpenWarehouse,
+                            modifier = Modifier.weight(1f).height(48.dp).testTag("btn_open_warehouse_shortcut")
+                        ) {
+                            Icon(Icons.Filled.Inventory2, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("창고열기", maxLines = 1)
+                        }
+                    }
+
+                    val activeCaseId = selectedSlot?.auctionCase?.caseId
+                    AiSeoGeoEvaluatorDashboardCard(
+                        selectedCaseId = activeCaseId,
+                        aiEvalState = uiState.aiEvalState,
+                        isBusy = uiState.isBusy,
+                        onRunAiEvalSelected = onRunAiEvalSelected,
+                        onTestBusanProfitableLand = onTestBusanProfitableLand,
+                        onTestLowScoreDraft = onTestLowScoreDraft,
+                        onApplyAiAutoFixes = onApplyAiAutoFixes
+                    )
+                }
+            }
         }
     }
 
@@ -433,52 +491,22 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun ExecutiveKpiCard(
-    label: String,
-    value: String,
-    sub: String,
-    accent: Color,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier,
-        color = NavySurface,
-        shape = MaterialTheme.shapes.medium,
-        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f))
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary, maxLines = 1)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontFamily = JetBrainsMonoFamily,
-                    fontWeight = FontWeight.Bold
-                ),
-                color = accent,
-                maxLines = 1
-            )
-            Text(sub, style = MaterialTheme.typography.labelSmall, color = TextMuted, maxLines = 1)
-        }
-    }
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun SimpleExecutiveSlotCard(
+private fun SimpleQueueRowCard(
     slot: GeneratedPostSlot,
-    funnelEnabled: Boolean,
-    onInspect: () -> Unit,
-    onSchedule: () -> Unit,
-    onRewrite: () -> Unit
+    config: com.example.model.ServerAutomationConfig,
+    proFunnel: com.example.model.ProFunnelConfig,
+    isBusy: Boolean,
+    onRegisterNow: () -> Unit,
+    onInspect: () -> Unit
 ) {
-    val qa = slot.qaReport
-    val proReport = remember(slot.auctionCase.caseId, slot.auctionCase.minBidPriceKrw) {
-        ProAnalysisAndPhotoGuideEngine.buildProReport(slot.auctionCase)
+    val scoreResult = remember(slot.postId, slot.variants, slot.qaReport) {
+        val reg = RegistryInfographicEngine.buildTemplate(slot.auctionCase)
+        Article30PointEvaluator.evaluate(slot, config, proFunnel, reg)
     }
+    val scoreColor = if (scoreResult.eligibleForRegistration) MintSecondary else TistoryAmber
 
     StudioCard(
-        borderColor = if (qa.overallPassed) NavyBorder else CrimsonAlert,
+        borderColor = if (slot.status == PostStatus.PUBLISHED) EmeraldPrimary.copy(alpha = 0.55f) else NavyBorder,
         modifier = Modifier
             .clickable(onClick = onInspect)
             .testTag("slot_card_${slot.slotIndex}")
@@ -488,93 +516,40 @@ private fun SimpleExecutiveSlotCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = slot.auctionCase.caseId,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontFamily = JetBrainsMonoFamily,
-                        fontWeight = FontWeight.Bold
-                    ),
+                    text = "${slot.auctionCase.caseId} · ${slot.auctionCase.propertyType.displayLabel}",
+                    style = MaterialTheme.typography.titleSmall.copy(fontFamily = JetBrainsMonoFamily),
                     color = TextPrimary
                 )
-                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = slot.auctionCase.propertyType.displayLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = CloudflareSky,
+                    text = slot.auctionCase.address,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            PostStatusBadge(status = slot.status)
+            Spacer(modifier = Modifier.width(8.dp))
+            StatusChip(
+                text = "${scoreResult.totalScore}점",
+                textColor = scoreColor,
+                backgroundColor = if (scoreResult.eligibleForRegistration) EmeraldContainer else NavySurfaceElevated
+            )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
-        Text(
-            text = slot.auctionCase.address,
-            style = MaterialTheme.typography.bodyMedium,
-            color = TextPrimary,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            text = "${slot.auctionCase.courtName} · 매각일 ${slot.auctionCase.auctionDate}",
-            style = MaterialTheme.typography.bodySmall,
-            color = TextSecondary
-        )
-
-        Spacer(modifier = Modifier.height(10.dp))
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(MaterialTheme.shapes.small)
-                .background(NavySurfaceElevated)
-                .padding(10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            MetricPair(
-                label = "감정가",
-                value = QaVerificationEngine.formatKrwShort(slot.auctionCase.appraisalPriceKrw)
+            Text(
+                text = "예약일 ${slot.publishDate} · 최저 ${QaVerificationEngine.formatKrwShort(slot.auctionCase.minBidPriceKrw)}",
+                style = MaterialTheme.typography.labelMedium,
+                color = TextMuted
             )
-            MetricPair(
-                label = "최저가 (${slot.auctionCase.discountRatePct}%)",
-                value = QaVerificationEngine.formatKrwShort(slot.auctionCase.minBidPriceKrw),
-                valueColor = MintSecondary
-            )
-            MetricPair(
-                label = "안전마진",
-                value = QaVerificationEngine.formatKrwShort(proReport.safetyMarginKrw),
-                valueColor = CloudflareSky
-            )
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-        val courtPhotos = remember(slot.auctionCase.caseId) {
-            CourtEvidenceRecorder.recordFullArchive(slot.auctionCase).photos
-        }
-        CourtPhotoStripMini(
-            auction = slot.auctionCase,
-            photos = courtPhotos,
-            onClickPhoto = onInspect
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            StatusChip(
-                text = if (qa.overallPassed) "3채널 QA·유사도(${qa.maxCrossChannelCosinePct}%) PASS" else "검수 보완 필요",
-                textColor = if (qa.overallPassed) MintSecondary else CrimsonAlert,
-                backgroundColor = if (qa.overallPassed) EmeraldContainer else CrimsonContainer
-            )
-            if (funnelEnabled) {
-                StatusChip(
-                    text = "법원사진 ${courtPhotos.size}컷 · 문건 3종 · 등기/권리 기록",
-                    textColor = TistoryAmber,
-                    backgroundColor = AmberContainer
-                )
-            }
+            PostStatusBadge(status = slot.status)
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -582,6 +557,26 @@ private fun SimpleExecutiveSlotCard(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            Button(
+                onClick = onRegisterNow,
+                enabled = !isBusy,
+                modifier = Modifier
+                    .weight(1.3f)
+                    .height(48.dp)
+                    .testTag("btn_schedule_${slot.slotIndex}"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (slot.status == PostStatus.PUBLISHED) CloudflareSky else EmeraldPrimary,
+                    contentColor = NavyBackground
+                )
+            ) {
+                Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = if (slot.status == PostStatus.PUBLISHED) "재검증·등록" else "95+ 자동 등록",
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
             OutlinedButton(
                 onClick = onInspect,
                 modifier = Modifier
@@ -589,34 +584,9 @@ private fun SimpleExecutiveSlotCard(
                     .height(48.dp)
                     .testTag("btn_inspect_${slot.slotIndex}")
             ) {
-                Text("상세 · 사진가이드", maxLines = 1)
-            }
-            if (!qa.overallPassed) {
-                Button(
-                    onClick = onRewrite,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("btn_rewrite_${slot.slotIndex}"),
-                    colors = ButtonDefaults.buttonColors(containerColor = TistoryAmber, contentColor = NavyBackground)
-                ) {
-                    Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("중복 교정", maxLines = 1)
-                }
-            } else {
-                Button(
-                    onClick = onSchedule,
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(48.dp)
-                        .testTag("btn_schedule_${slot.slotIndex}"),
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
-                ) {
-                    Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("바로 예약", maxLines = 1)
-                }
+                Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("상세", maxLines = 1)
             }
         }
     }
@@ -646,12 +616,12 @@ private fun AddCrawledCaseDialog(
     var minBidMan by remember { mutableStateOf("204800") }
     var baseRightDate by remember { mutableStateOf("2021-04-19") }
     var assumedRights by remember { mutableStateOf("말소기준권리 이후 후순위 소멸, 관리비 체납 현장 확인") }
-    var publishDate by remember { mutableStateOf("2026-11-22") }
+    var publishDate by remember { mutableStateOf("2026-11-23") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = NavySurface,
-        title = { Text("신규 경매 물건 3채널 예약 생성", color = TextPrimary) },
+        title = { Text("신규 경매 물건 추가", color = TextPrimary) },
         text = {
             Column(
                 modifier = Modifier
@@ -659,11 +629,6 @@ private fun AddCrawledCaseDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    "유료급 권리·세무·현장 사진 가이드 무료 원고와 PRO 전환 퍼널이 자동 생성됩니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = TextSecondary
-                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)

@@ -55,10 +55,15 @@ import androidx.compose.ui.unit.dp
 import com.example.engine.CourtEvidenceRecorder
 import com.example.engine.Article30PointEvaluator
 import com.example.engine.InfographicBitmapRenderer
+import com.example.engine.InvestmentAttractivenessEngine
+import com.example.engine.LegalDoctrineVerifier
+import com.example.engine.LegalTermStudyEngine
 import com.example.engine.ProAnalysisAndPhotoGuideEngine
 import com.example.engine.RegistryAndMotionEngine
 import com.example.engine.RegistryInfographicEngine
 import com.example.model.ChannelPlatform
+import com.example.model.LegalStudyCategory
+import com.example.model.PostAuctionOutcomeType
 import com.example.model.RegistryInfographicTemplateType
 import com.example.ui.StudioUiState
 import com.example.ui.theme.CloudflareSky
@@ -92,6 +97,28 @@ fun ChannelQaScreen(
     onRunQualityDefense: (String) -> Unit = {},
     onFetchNaverMarket: (String) -> Unit = {},
     onRunLegalVerify: (String) -> Unit = {},
+    onSaveThreeChannelDestinations: (
+        naverBlogId: String,
+        naverCategoryName: String,
+        naverWorkerRelayEndpoint: String,
+        tistoryBlogUrl: String,
+        tistoryCategoryName: String,
+        ddakchalApiBase: String,
+        cloudflareBlogPath: String,
+        publishNaver: Boolean,
+        publishTistory: Boolean,
+        publishCloudflare: Boolean
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> },
+    onPublishNaverDirectAndVerify: (String, String) -> Unit = { _, _ -> },
+    onPublishSelectedChannelsAndVerify: (String, String) -> Unit = { _, _ -> },
+    onReinvestigateFollowUp: (
+        postId: String,
+        outcomeType: PostAuctionOutcomeType,
+        actualWinningManWon: Long?,
+        nextAuctionDate: String?,
+        courtNote: String
+    ) -> Unit = { _, _, _, _, _ -> },
+    onLegalStudyFilterChange: (LegalStudyCategory?, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val selectedSlot = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }
@@ -233,6 +260,55 @@ fun ChannelQaScreen(
                 isBusy = uiState.isBusy,
                 onToggleAutoDefense = onToggleAutoQualityDefense,
                 onRunQualityDefense = { onRunQualityDefense(selectedSlot.postId) }
+            )
+        }
+
+        // 1-6. 3-Channel Destination Inputs & Direct Naver Publish + Live HTTP Verification
+        item {
+            ThreeChannelDestinationAndNaverVerifyCard(
+                slot = selectedSlot,
+                config = uiState.config,
+                report = uiState.publishVerificationReport,
+                isBusy = uiState.isBusy,
+                onSaveDestinations = onSaveThreeChannelDestinations,
+                onPublishNaverDirectAndVerify = { url ->
+                    onPublishNaverDirectAndVerify(selectedSlot.postId, url)
+                },
+                onPublishSelectedChannelsAndVerify = { url ->
+                    onPublishSelectedChannelsAndVerify(selectedSlot.postId, url)
+                }
+            )
+        }
+
+        // 1-7. Post-Auction Follow-Up Investigation & Related Article Generation
+        item {
+            PostAuctionFollowUpCard(
+                auction = auction,
+                followUpRecord = uiState.followUpRecordsByCaseId[auction.caseId],
+                isBusy = uiState.isBusy,
+                onReinvestigateAndCreateFollowUp = { outcome, winMan, nextDate, note ->
+                    onReinvestigateFollowUp(selectedSlot.postId, outcome, winMan, nextDate, note)
+                }
+            )
+        }
+
+        // 1-8. Investment Attractiveness Score & 5-Competitor Benchmark Table
+        item {
+            val attractiveness = uiState.attractivenessByCaseId[auction.caseId] ?: remember(auction.caseId) {
+                val legal = uiState.legalVerificationByCaseId[auction.caseId] ?: LegalDoctrineVerifier.verify(auction)
+                InvestmentAttractivenessEngine.score(auction, legal)
+            }
+            CompetitiveAttractivenessCard(score = attractiveness)
+        }
+
+        // 1-9. Master LegalTech Study DB (1 contextual study note embedded per post + searchable cards)
+        item {
+            val contextualTerm = remember(auction.caseId) { LegalTermStudyEngine.selectContextualTerm(auction) }
+            LegalTermStudyCard(
+                selectedCategory = uiState.selectedLegalStudyCategory,
+                query = uiState.legalStudyQuery,
+                contextualTermId = contextualTerm.codeId,
+                onFilterChange = onLegalStudyFilterChange
             )
         }
 

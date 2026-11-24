@@ -18,6 +18,7 @@ object Article30PointEvaluator {
 
     private val AI_CLICHE_PATTERNS = listOf("■", "Q1.", "Q2.", "Q3.", "Q4.", "알아보겠습니다")
     private val EMOJI_REGEX = Regex("[\\p{So}\\p{Cn}]")
+    private val METRIC_UNIT_SYMBOLS = setOf("㎡", "㎥", "㎝", "㎜", "㎞", "㏊")
 
     fun evaluate(
         slot: GeneratedPostSlot,
@@ -112,7 +113,7 @@ object Article30PointEvaluator {
             item(
                 8, "eval-08", EvaluationPillar.HUMAN_TONE,
                 "본문 이모지·장식 아이콘 0건 무이모지 문체", 4,
-                !EMOJI_REGEX.containsMatchIn(nvBody) && !nvBody.contains("✅") && !nvBody.contains("🔥"),
+                EMOJI_REGEX.findAll(nvBody).none { it.value !in METRIC_UNIT_SYMBOLS } && !nvBody.contains("✅") && !nvBody.contains("🔥"),
                 "불필요한 이모지/기호 배제 확인"
             ),
             item(

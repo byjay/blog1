@@ -290,15 +290,18 @@ fun CloudflareServerScreen(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "일일 최대 발행 수 (DAILY_POST_LIMIT): ${draft.dailyPostLimit}건 (초기 계정 보호 1~2건 권장)",
+                    text = "일일 최대 발행 수 (DAILY_POST_LIMIT): ${draft.dailyPostLimit}건 (주간 예상 ${draft.dailyPostLimit * 7}건 · 일 3~5건 권장)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MintSecondary
                 )
                 Slider(
-                    value = draft.dailyPostLimit.toFloat(),
-                    onValueChange = { draft = draft.copy(dailyPostLimit = it.roundToInt().coerceIn(1, 5)) },
-                    valueRange = 1f..5f,
-                    steps = 3
+                    value = draft.dailyPostLimit.toFloat().coerceIn(1f, 10f),
+                    onValueChange = {
+                        val nextDaily = it.roundToInt().coerceIn(1, 10)
+                        draft = draft.copy(dailyPostLimit = nextDaily, weeklyTargetPosts = nextDaily * 7)
+                    },
+                    valueRange = 1f..10f,
+                    steps = 8
                 )
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -386,26 +389,122 @@ fun CloudflareServerScreen(
             }
         }
 
-        // Optional LLM Endpoint & Portal IDs (.env)
+        // Optional LLM Endpoint & 3-Channel Destinations (.env + DataStore)
         item {
             StudioCard {
-                Text("4. 포털 계정 & 선택적 LLM 리라이팅 엔드포인트", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                Text("4. 3곳 블로그 등록처 · 포털 계정 & LLM 엔드포인트", style = MaterialTheme.typography.titleSmall, color = TextPrimary)
                 Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("① 네이버 블로그 등록 활성화", style = MaterialTheme.typography.labelLarge, color = MintSecondary)
+                    Switch(
+                        checked = draft.publishTargetNaver,
+                        onCheckedChange = { draft = draft.copy(publishTargetNaver = it) }
+                    )
+                }
                 OutlinedTextField(
-                    value = draft.naverId,
-                    onValueChange = { draft = draft.copy(naverId = it) },
-                    label = { Text("NAVER_ID (로그 출력 시 마스킹)") },
+                    value = draft.naverBlogId,
+                    onValueChange = { draft = draft.copy(naverBlogId = it) },
+                    label = { Text("NAVER_BLOG_ID (예: my_auction_blog)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = draft.naverCategoryName,
+                        onValueChange = { draft = draft.copy(naverCategoryName = it) },
+                        label = { Text("네이버 카테고리") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = draft.naverId,
+                        onValueChange = { draft = draft.copy(naverId = it) },
+                        label = { Text("NAVER_ID (마스킹)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(
-                    value = draft.tistoryId,
-                    onValueChange = { draft = draft.copy(tistoryId = it) },
-                    label = { Text("TISTORY_ID (카카오 계정)") },
+                    value = draft.naverWorkerRelayEndpoint,
+                    onValueChange = { draft = draft.copy(naverWorkerRelayEndpoint = it) },
+                    label = { Text("네이버 워커 릴레이 URL (선택)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("② 티스토리 등록 활성화", style = MaterialTheme.typography.labelLarge, color = TistoryAmber)
+                    Switch(
+                        checked = draft.publishTargetTistory,
+                        onCheckedChange = { draft = draft.copy(publishTargetTistory = it) }
+                    )
+                }
+                OutlinedTextField(
+                    value = draft.tistoryBlogUrl,
+                    onValueChange = { draft = draft.copy(tistoryBlogUrl = it) },
+                    label = { Text("TISTORY_BLOG_URL (예: https://myblog.tistory.com)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = draft.tistoryCategoryName,
+                        onValueChange = { draft = draft.copy(tistoryCategoryName = it) },
+                        label = { Text("티스토리 카테고리") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = draft.tistoryId,
+                        onValueChange = { draft = draft.copy(tistoryId = it) },
+                        label = { Text("TISTORY_ID (카카오)") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("③ Cloudflare 자체웹 등록 활성화", style = MaterialTheme.typography.labelLarge, color = CloudflareSky)
+                    Switch(
+                        checked = draft.publishTargetCloudflare,
+                        onCheckedChange = { draft = draft.copy(publishTargetCloudflare = it) }
+                    )
+                }
+                OutlinedTextField(
+                    value = draft.cloudflareBlogPath,
+                    onValueChange = { draft = draft.copy(cloudflareBlogPath = it) },
+                    label = { Text("Cloudflare 블로그 경로 (기본 /blog)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Button(
+                    onClick = { onSaveConfig(draft) },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
+                ) {
+                    Icon(Icons.Filled.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("3채널 등록처 및 포털 설정 저장")
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedTextField(
                     value = draft.llmApiEndpoint,

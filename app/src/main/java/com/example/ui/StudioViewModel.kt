@@ -9,6 +9,7 @@ import com.example.ai.AiSeoGeoAdvisor
 import com.example.ai.FirebaseAiSeoGeoService
 import com.example.data.BlogAutomationRepository
 import com.example.data.BlogPostTemplateStore
+import com.example.data.DirectChannelPublishClient
 import com.example.data.NaverRealEstateApiClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ProFunnelStore
@@ -19,20 +20,28 @@ import com.example.engine.BlogPostTemplateEngine
 import com.example.engine.BoilerplateAndTemplateEngine
 import com.example.engine.CourtEvidenceRecorder
 import com.example.engine.DefaultSpecDataFactory
+import com.example.engine.InvestmentAttractivenessEngine
 import com.example.engine.LegalDoctrineVerifier
 import com.example.engine.NearbyMarketEngine
+import com.example.engine.PostAuctionFollowUpEngine
 import com.example.engine.QaVerificationEngine
 import com.example.engine.QualityDefenseEngine
 import com.example.engine.RegistryInfographicEngine
 import com.example.engine.SeoGuideEngine
+import com.example.engine.WeeklyBatchScheduleEngine
 import com.example.model.AiEvalUiState
 import com.example.model.AuctionCaseIntel
 import com.example.model.BlogPostTemplate
 import com.example.model.ChannelPlatform
 import com.example.model.CourtFullArchiveRecord
 import com.example.model.GeneratedPostSlot
+import com.example.model.InvestmentAttractivenessScore
 import com.example.model.LegalDoctrineReport
+import com.example.model.LegalStudyCategory
+import com.example.model.NaverAndMultiChannelPublishReport
 import com.example.model.NearbyMarketAnalysisReport
+import com.example.model.PostAuctionFollowUpRecord
+import com.example.model.PostAuctionOutcomeType
 import com.example.model.PostStatus
 import com.example.model.ProFunnelConfig
 import com.example.model.PropertyTemplateYaml
@@ -49,6 +58,7 @@ import com.example.model.ServerTelemetryState
 import com.example.model.VisitorTrafficLog
 import com.example.model.WarehouseArticle
 import com.example.model.WarehouseArticleStatus
+import com.example.model.WeeklyBatchRunSummary
 import com.example.model.WritingActivityLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -85,6 +95,13 @@ data class StudioUiState(
     val qualityDefenseState: QualityDefenseModuleState = QualityDefenseModuleState(),
     val marketAnalysisByCaseId: Map<String, NearbyMarketAnalysisReport> = emptyMap(),
     val legalVerificationByCaseId: Map<String, LegalDoctrineReport> = emptyMap(),
+    val selectedWeeklyDailyCount: Int = 4,
+    val weeklyBatchSummary: WeeklyBatchRunSummary? = null,
+    val publishVerificationReport: NaverAndMultiChannelPublishReport? = null,
+    val followUpRecordsByCaseId: Map<String, PostAuctionFollowUpRecord> = emptyMap(),
+    val attractivenessByCaseId: Map<String, InvestmentAttractivenessScore> = emptyMap(),
+    val selectedLegalStudyCategory: LegalStudyCategory? = null,
+    val legalStudyQuery: String = "",
     val statusMessage: String? = null,
     val errorMessage: String? = null
 )
@@ -92,7 +109,8 @@ data class StudioUiState(
 class StudioViewModel(
     private val repository: BlogAutomationRepository,
     private val aiAdvisor: AiSeoGeoAdvisor = FirebaseAiSeoGeoService(),
-    private val naverApiClient: NaverRealEstateApiClient = NaverRealEstateApiClient()
+    private val naverApiClient: NaverRealEstateApiClient = NaverRealEstateApiClient(),
+    private val directPublishClient: DirectChannelPublishClient = DirectChannelPublishClient()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(StudioUiState())
@@ -110,6 +128,10 @@ class StudioViewModel(
         val initialArchive = firstAuction?.let { CourtEvidenceRecorder.recordFullArchive(it) }
         val initialLegalMap = initialSlots.associate { slot ->
             slot.auctionCase.caseId to LegalDoctrineVerifier.verify(slot.auctionCase)
+        }
+        val initialAttractivenessMap = initialSlots.associate { slot ->
+            val legal = initialLegalMap[slot.auctionCase.caseId] ?: LegalDoctrineVerifier.verify(slot.auctionCase)
+            slot.auctionCase.caseId to InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
         }
         val initialDefense = firstSlot?.variants?.get(ChannelPlatform.NAVER)?.let { nv ->
             QualityDefenseEngine.defendText(
@@ -129,6 +151,7 @@ class StudioViewModel(
                 writingLogs = initialSeed.writingLogs,
                 visitorLogs = initialSeed.visitorLogs,
                 legalVerificationByCaseId = initialLegalMap,
+                attractivenessByCaseId = initialAttractivenessMap,
                 qualityDefenseState = QualityDefenseModuleState(
                     autoDefenseEnabled = true,
                     lastAuditedCaseId = firstAuction?.caseId.orEmpty(),
@@ -1687,6 +1710,626 @@ class StudioViewModel(
                 )
             }
         }
+    }
+
+    // ==================== 초심플 주간(7일) 예약 · 95+ 자동교정 등록 · 3채널 검증 · 사후재조사 ====================
+
+    fun setWeeklyDailyCount(perDay: Int) {
+        val safe = perDay.coerceIn(3, 5)
+        _uiState.update { it.copy(selectedWeeklyDailyCount = safe) }
+    }
+
+    fun generateWeeklyBatchAndSchedule(perDay: Int = _uiState.value.selectedWeeklyDailyCount) {
+        val safePerDay = perDay.coerceIn(3, 5)
+        val state = _uiState.value
+        val updatedConfig = state.config.copy(
+            dailyPostLimit = safePerDay.coerceAtLeast(state.config.dailyPostLimit),
+            weeklyTargetPosts = safePerDay * 7
+        )
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    selectedWeeklyDailyCount = safePerDay,
+                    statusMessage = null,
+                    errorMessage = null
+                )
+            }
+            try {
+                repository.saveConfig(updatedConfig)
+                val syncedRes = repository.syncSyndicationPack(updatedConfig)
+                val serverSlots = syncedRes.getOrDefault(emptyList())
+                val ddakchalLinked = syncedRes.isSuccess && serverSlots.isNotEmpty()
+                val existingIds = state.warehouseArticles.map { it.slot.auctionCase.caseId }.toSet()
+                val corpus = repository.getRecent7DayCorpus()
+
+                val (weeklySlots, autoFixedCount) = WeeklyBatchScheduleEngine.buildWeekly7DayPlan(
+                    dailyCount = safePerDay,
+                    days = 7,
+                    serverSyncedSlots = serverSlots,
+                    existingCaseIds = existingIds,
+                    config = updatedConfig,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus
+                )
+
+                val now = currentTimestamp()
+                val newWarehouseArticles = weeklySlots.map { slot ->
+                    val reg = RegistryInfographicEngine.buildTemplate(slot.auctionCase, state.selectedRegistryTemplateType)
+                    val eval = Article30PointEvaluator.evaluate(slot, updatedConfig, state.proFunnel, reg, corpus)
+                    WarehouseArticle(
+                        warehouseId = "wh-${slot.auctionCase.dedupKey}",
+                        slot = slot,
+                        evaluation = eval,
+                        registryInfographic = reg,
+                        warehouseStatus = if (eval.eligibleForRegistration) WarehouseArticleStatus.STORED_READY else WarehouseArticleStatus.NEEDS_IMPROVEMENT,
+                        createdAt = now
+                    )
+                }
+                val score95Count = newWarehouseArticles.count { it.evaluation.eligibleForRegistration }
+                val (d1Synced, d1Msg) = repository.pushWeeklyBatchToD1(updatedConfig, weeklySlots)
+
+                val log = WritingActivityLog(
+                    logId = "wlog-weekly-${System.currentTimeMillis()}",
+                    warehouseId = "weekly-batch",
+                    caseId = "주간7일(${weeklySlots.size}건)",
+                    actionTitle = "주간 7일치(일 ${safePerDay}건) 자동생성·95+ 교정·예약 완료",
+                    score = newWarehouseArticles.minOfOrNull { it.evaluation.totalScore } ?: 95,
+                    passedGate95 = score95Count == newWarehouseArticles.size,
+                    detail = "${if (ddakchalLinked) "딱찰 실서버 ${serverSlots.size}건+" else "중복방지 풀"} · 95+ ${score95Count}/${weeklySlots.size}건 · $d1Msg",
+                    timestamp = now
+                )
+                val snapshot = repository.upsertWarehouseArticles(newWarehouseArticles, log)
+
+                val newLegalMap = state.legalVerificationByCaseId.toMutableMap()
+                val newAttrMap = state.attractivenessByCaseId.toMutableMap()
+                weeklySlots.forEach { slot ->
+                    val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
+                    newLegalMap[slot.auctionCase.caseId] = legal
+                    newAttrMap[slot.auctionCase.caseId] = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
+                }
+
+                val newPublishLogs = weeklySlots.take(safePerDay).flatMapIndexed { idx, slot ->
+                    selectedPlatformsFromConfig(updatedConfig).map { platform ->
+                        PublishLogEntry(
+                            logId = "log-wk-${System.currentTimeMillis()}-$idx-${platform.code}",
+                            postId = slot.postId,
+                            caseId = slot.auctionCase.caseId,
+                            platform = platform,
+                            status = PostStatus.QUEUED,
+                            publishedUrl = null,
+                            errorMessage = null,
+                            handoffReason = null,
+                            retryCount = 0,
+                            publishedAt = slot.scheduledTimes[platform] ?: now
+                        )
+                    }
+                }
+
+                val summaryText = "${weeklySlots.size}건(일 ${safePerDay}건×7일) 중복없이 생성 · 95점+ ${score95Count}건 · 자동교정 ${autoFixedCount}회 · $d1Msg"
+                val weeklySummary = WeeklyBatchRunSummary(
+                    generatedAt = now,
+                    dailyCount = safePerDay,
+                    totalDays = 7,
+                    totalGeneratedCount = weeklySlots.size,
+                    score95PlusCount = score95Count,
+                    autoFixedCount = autoFixedCount,
+                    serverSyncedCount = d1Synced,
+                    ddakchalLinked = ddakchalLinked,
+                    summaryText = summaryText
+                )
+
+                _uiState.update { current ->
+                    current.copy(
+                        isBusy = false,
+                        config = updatedConfig,
+                        slots = weeklySlots,
+                        selectedSlotId = weeklySlots.firstOrNull()?.postId,
+                        activeRegistryInfographic = weeklySlots.firstOrNull()?.let {
+                            RegistryInfographicEngine.buildTemplate(it.auctionCase, current.selectedRegistryTemplateType)
+                        },
+                        activeCourtArchive = weeklySlots.firstOrNull()?.let {
+                            CourtEvidenceRecorder.recordFullArchive(it.auctionCase)
+                        },
+                        warehouseArticles = snapshot?.articles ?: (newWarehouseArticles + current.warehouseArticles),
+                        writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
+                        publishLogs = newPublishLogs + current.publishLogs,
+                        legalVerificationByCaseId = newLegalMap,
+                        attractivenessByCaseId = newAttrMap,
+                        weeklyBatchSummary = weeklySummary,
+                        telemetry = current.telemetry.copy(
+                            ddakchalConnected = ddakchalLinked,
+                            cloudflareD1Connected = d1Synced > 0 || current.telemetry.cloudflareD1Connected,
+                            lastSyncTime = now,
+                            lastD1ExecutionSummary = d1Msg,
+                            dailyQuotaUsed = safePerDay
+                        ),
+                        statusMessage = summaryText
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        errorMessage = "주간 자동 예약 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                    )
+                }
+            }
+        }
+    }
+
+    fun createHighScoreAndAutoRegister(propertyType: PropertyType? = null) {
+        val state = _uiState.value
+        val cfg = state.config
+        val funnelCfg = state.proFunnel
+        val nextIndex = state.warehouseArticles.size + state.slots.size + 1
+        val chosenType = propertyType ?: PropertyType.entries[(nextIndex - 1) % PropertyType.entries.size]
+        val caseNo = "2026타경${7100 + nextIndex * 19}"
+        val dedupKey = "ca-auto-$caseNo-${System.currentTimeMillis() % 10000}"
+
+        val (court, address, appMan, minMan) = when (chosenType) {
+            PropertyType.APT_OFFICETEL -> listOf("수원지방법원", "경기도 용인시 수지구 성복동 롯데캐슬골드 102동 804호", "68000", "43520")
+            PropertyType.VILLA_MULTIFAMILY -> listOf("서울북부지방법원", "서울특별시 도봉구 창동 다세대주택 4층 401호", "26000", "16640")
+            PropertyType.COMMERCIAL_RETAIL -> listOf("서울동부지방법원", "서울특별시 송파구 문정동 법조타운 근린상가 1층 112호", "89000", "56960")
+            PropertyType.LAND_FARMLAND -> listOf("춘천지방법원", "강원특별자치도 원주시 지정면 계획관리 대지 420㎡", "42000", "26880")
+            PropertyType.FACTORY_SPECIAL -> listOf("수원지방법원 안산지원", "경기도 시흥시 정왕동 시화공단 일반공장 1동", "195000", "124800")
+        }
+        val appraisalKrw = appMan.toLong() * 10_000L
+        val minBidKrw = minMan.toLong() * 10_000L
+        val todayIso = PostAuctionFollowUpEngine.currentIsoDate()
+
+        val auction = AuctionCaseIntel(
+            caseId = caseNo,
+            dedupKey = dedupKey,
+            courtName = court,
+            address = address,
+            propertyType = chosenType,
+            appraisalPriceKrw = appraisalKrw,
+            minBidPriceKrw = minBidKrw,
+            bidCount = 1,
+            discountRatePct = 64,
+            auctionDate = "2026-12-20",
+            baseRightDate = "2021-07-08",
+            dividendDeadline = "2026-12-05",
+            claimAmountKrw = (appraisalKrw * 0.52).toLong(),
+            depositRatePct = 10,
+            possessionSummary = "채무자 겸 소유자 점유 확인 완료",
+            tenantSummary = "전입세대열람 및 매각물건명세서 대조 완료(선순위 대항력 임차인 없음)",
+            assumedRightsText = "말소기준권리 2021-07-08 근저당 이후 후순위 권리 일괄 소멸",
+            specialCheckNotice = chosenType.focusSummary,
+            recentRealTradeMedianKrw = (appraisalKrw * 0.91).toLong(),
+            stats3yRatePct = 75.8,
+            clicksLast7d = 590 + nextIndex * 11,
+            conservativeBidKrw = (minBidKrw * 1.05).toLong(),
+            balancedBidKrw = (minBidKrw * 1.12).toLong(),
+            aggressiveBidKrw = (minBidKrw * 1.19).toLong()
+        )
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val variants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, nextIndex, cfg, proFunnel = funnelCfg)
+                val scheduled = repository.computeStaggeredSchedule(todayIso, nextIndex, cfg)
+                val draft = GeneratedPostSlot(
+                    postId = "post-$dedupKey",
+                    queueId = "q-auto-$nextIndex",
+                    slotIndex = nextIndex,
+                    publishDate = todayIso,
+                    auctionCase = auction,
+                    variants = variants,
+                    scheduledTimes = scheduled,
+                    status = PostStatus.DRAFT,
+                    qaReport = QaVerificationEngine.auditSlot(auction, variants, scheduled, cfg, corpus),
+                    sourceLabel = "초심플 95+ 자동 교정·등록"
+                )
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = draft,
+                    config = cfg,
+                    proFunnel = funnelCfg,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 3
+                )
+                executeAutoRegisterSlotInternal(fixed.slot, fixed.finalScore, fixed.passedGate95, isNewCreation = true)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "자동 생성·등록 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun autoFixAndRegisterSlot(postId: String) {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == postId }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+            ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = targetSlot,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 3
+                )
+                executeAutoRegisterSlotInternal(fixed.slot, fixed.finalScore, fixed.passedGate95, isNewCreation = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "자동 교정·등록 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    private suspend fun executeAutoRegisterSlotInternal(
+        slot: GeneratedPostSlot,
+        score: Int,
+        passed95: Boolean,
+        isNewCreation: Boolean
+    ) {
+        val state = _uiState.value
+        val cfg = state.config
+        val regTemplate = RegistryInfographicEngine.buildTemplate(slot.auctionCase, state.selectedRegistryTemplateType)
+        val courtArchive = CourtEvidenceRecorder.recordFullArchive(slot.auctionCase)
+        val eval = Article30PointEvaluator.evaluate(slot, cfg, state.proFunnel, regTemplate)
+        val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
+        val attractiveness = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
+
+        val selectedPlatforms = selectedPlatformsFromConfig(cfg)
+        val report = directPublishClient.publishSelectedChannelsAndVerify(slot, cfg)
+        val anyHttpOk = report.outcomes.any { it.reachableOk }
+        val registeredChannels = report.outcomes.filter { it.reachableOk }.map { it.platform }
+        val d1Result = repository.pushScheduledSlotToD1(cfg, slot)
+        val now = currentTimestamp()
+
+        val updatedPublishedUrls = slot.publishedUrls.toMutableMap().apply {
+            report.outcomes.filter { it.reachableOk && it.publishedPostUrl.isNotBlank() }.forEach {
+                put(it.platform, it.publishedPostUrl)
+            }
+        }
+        val finalStatus = when {
+            passed95 && (anyHttpOk || d1Result.isSuccess) -> PostStatus.PUBLISHED
+            passed95 -> PostStatus.QUEUED
+            else -> PostStatus.DRAFT
+        }
+        val finalSlot = slot.copy(status = finalStatus, publishedUrls = updatedPublishedUrls)
+
+        val whId = "wh-${finalSlot.auctionCase.dedupKey}"
+        val whStatus = when {
+            finalStatus == PostStatus.PUBLISHED && eval.eligibleForRegistration -> WarehouseArticleStatus.REGISTERED
+            eval.eligibleForRegistration -> WarehouseArticleStatus.STORED_READY
+            else -> WarehouseArticleStatus.NEEDS_IMPROVEMENT
+        }
+        val whArticle = WarehouseArticle(
+            warehouseId = whId,
+            slot = finalSlot,
+            evaluation = eval,
+            registryInfographic = regTemplate,
+            warehouseStatus = whStatus,
+            createdAt = now,
+            registeredAt = if (whStatus == WarehouseArticleStatus.REGISTERED) now else null,
+            registeredChannels = if (registeredChannels.isNotEmpty()) registeredChannels else selectedPlatforms
+        )
+        val log = WritingActivityLog(
+            logId = "wlog-autoreg-${System.currentTimeMillis()}",
+            warehouseId = whId,
+            caseId = finalSlot.auctionCase.caseId,
+            actionTitle = "${if (isNewCreation) "바로생성" else "자동교정"} → ${score}점 ${if (whStatus == WarehouseArticleStatus.REGISTERED) "자동등록 완료" else "예약·창고 보관"}",
+            score = score,
+            passedGate95 = passed95,
+            detail = "${report.overallSummary} · ${d1Result.getOrElse { "로컬 큐 저장" }}",
+            timestamp = now
+        )
+        val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+
+        val pubLogs = report.outcomes.mapIndexed { idx, outcome ->
+            PublishLogEntry(
+                logId = "log-autoreg-${System.currentTimeMillis()}-$idx",
+                postId = finalSlot.postId,
+                caseId = finalSlot.auctionCase.caseId,
+                platform = outcome.platform,
+                status = if (outcome.reachableOk) PostStatus.PUBLISHED else PostStatus.QUEUED,
+                publishedUrl = outcome.publishedPostUrl.ifBlank { outcome.targetUrl.ifBlank { null } },
+                errorMessage = if (outcome.reachableOk) null else outcome.message,
+                handoffReason = null,
+                retryCount = 0,
+                publishedAt = now
+            )
+        }
+
+        _uiState.update { current ->
+            val replacedOrPrependedSlots = if (current.slots.any { it.postId == finalSlot.postId }) {
+                current.slots.map { if (it.postId == finalSlot.postId) finalSlot else it }
+            } else {
+                listOf(finalSlot) + current.slots
+            }
+            current.copy(
+                isBusy = false,
+                slots = replacedOrPrependedSlots,
+                selectedSlotId = finalSlot.postId,
+                activeRegistryInfographic = regTemplate,
+                activeCourtArchive = courtArchive,
+                warehouseArticles = snapshot?.articles ?: current.warehouseArticles,
+                writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
+                publishLogs = pubLogs + current.publishLogs,
+                publishVerificationReport = report,
+                legalVerificationByCaseId = current.legalVerificationByCaseId + (finalSlot.auctionCase.caseId to legal),
+                attractivenessByCaseId = current.attractivenessByCaseId + (finalSlot.auctionCase.caseId to attractiveness),
+                statusMessage = "${finalSlot.auctionCase.caseId} (${score}점): ${report.overallSummary}"
+            )
+        }
+    }
+
+    fun saveThreeChannelDestinations(
+        naverBlogId: String,
+        naverCategoryName: String,
+        naverWorkerRelayEndpoint: String,
+        tistoryBlogUrl: String,
+        tistoryCategoryName: String,
+        ddakchalApiBase: String,
+        cloudflareBlogPath: String,
+        publishNaver: Boolean,
+        publishTistory: Boolean,
+        publishCloudflare: Boolean
+    ) {
+        val updated = _uiState.value.config.copy(
+            naverBlogId = naverBlogId.trim(),
+            naverCategoryName = naverCategoryName.trim().ifBlank { "부동산 경매 분석" },
+            naverWorkerRelayEndpoint = naverWorkerRelayEndpoint.trim(),
+            tistoryBlogUrl = tistoryBlogUrl.trim().removeSuffix("/"),
+            tistoryCategoryName = tistoryCategoryName.trim().ifBlank { "경매·권리·세무 리포트" },
+            ddakchalApiBase = ddakchalApiBase.trim().removeSuffix("/"),
+            cloudflareBlogPath = cloudflareBlogPath.trim().ifBlank { "/blog" },
+            publishTargetNaver = publishNaver,
+            publishTargetTistory = publishTistory,
+            publishTargetCloudflare = publishCloudflare
+        )
+        viewModelScope.launch {
+            repository.saveConfig(updated)
+            _uiState.update {
+                it.copy(
+                    config = updated,
+                    statusMessage = "3채널 등록처(네이버·티스토리·자체웹) 저장 완료"
+                )
+            }
+        }
+    }
+
+    fun publishNaverDirectAndVerify(postId: String? = null, customPostUrl: String = "") {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == (postId ?: state.selectedSlotId) }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == (postId ?: state.selectedSlotId) }?.slot
+            ?: state.slots.firstOrNull()
+            ?: return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = targetSlot,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 2
+                )
+                val report = directPublishClient.publishNaverDirectAndVerify(fixed.slot, state.config, customPostUrl)
+                val now = currentTimestamp()
+                val naverOutcome = report.outcomes.firstOrNull { it.platform == ChannelPlatform.NAVER }
+                val updatedUrls = if (naverOutcome?.reachableOk == true && naverOutcome.publishedPostUrl.isNotBlank()) {
+                    fixed.slot.publishedUrls + (ChannelPlatform.NAVER to naverOutcome.publishedPostUrl)
+                } else fixed.slot.publishedUrls
+                val updatedSlot = fixed.slot.copy(
+                    publishedUrls = updatedUrls,
+                    status = if (report.naverDirectPassed) PostStatus.PUBLISHED else fixed.slot.status
+                )
+                val newLog = PublishLogEntry(
+                    logId = "log-nv-${System.currentTimeMillis()}",
+                    postId = updatedSlot.postId,
+                    caseId = updatedSlot.auctionCase.caseId,
+                    platform = ChannelPlatform.NAVER,
+                    status = if (naverOutcome?.reachableOk == true) PostStatus.PUBLISHED else PostStatus.FAILED,
+                    publishedUrl = naverOutcome?.publishedPostUrl?.ifBlank { null },
+                    errorMessage = if (naverOutcome?.reachableOk == true) null else naverOutcome?.message,
+                    handoffReason = null,
+                    retryCount = 0,
+                    publishedAt = now
+                )
+                if (report.naverDirectPassed) {
+                    val existingWh = state.warehouseArticles.firstOrNull { it.slot.postId == updatedSlot.postId }
+                    if (existingWh != null) {
+                        val wLog = WritingActivityLog(
+                            logId = "wlog-nv-${System.currentTimeMillis()}",
+                            warehouseId = existingWh.warehouseId,
+                            caseId = updatedSlot.auctionCase.caseId,
+                            actionTitle = "네이버 바로 등록·실검증 PASS (${fixed.finalScore}점)",
+                            score = fixed.finalScore,
+                            passedGate95 = true,
+                            detail = report.verifiedNaverPostUrl,
+                            timestamp = now
+                        )
+                        repository.recordWarehouseRegistration(existingWh.warehouseId, listOf(ChannelPlatform.NAVER), wLog)
+                    }
+                }
+                _uiState.update { current ->
+                    current.copy(
+                        isBusy = false,
+                        slots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it },
+                        publishLogs = listOf(newLog) + current.publishLogs,
+                        publishVerificationReport = report,
+                        statusMessage = if (report.naverDirectPassed) report.overallSummary else null,
+                        errorMessage = if (!report.naverDirectPassed) report.overallSummary else null
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "네이버 검증 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun publishSelectedChannelsAndVerify(postId: String? = null, customNaverPostUrl: String = "") {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == (postId ?: state.selectedSlotId) }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == (postId ?: state.selectedSlotId) }?.slot
+            ?: state.slots.firstOrNull()
+            ?: return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = targetSlot,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 2
+                )
+                val report = directPublishClient.publishSelectedChannelsAndVerify(fixed.slot, state.config, customNaverPostUrl)
+                val now = currentTimestamp()
+                val newLogs = report.outcomes.mapIndexed { idx, outcome ->
+                    PublishLogEntry(
+                        logId = "log-sel-${System.currentTimeMillis()}-$idx",
+                        postId = fixed.slot.postId,
+                        caseId = fixed.slot.auctionCase.caseId,
+                        platform = outcome.platform,
+                        status = if (outcome.reachableOk) PostStatus.PUBLISHED else PostStatus.FAILED,
+                        publishedUrl = outcome.publishedPostUrl.ifBlank { null },
+                        errorMessage = if (outcome.reachableOk) null else outcome.message,
+                        handoffReason = null,
+                        retryCount = 0,
+                        publishedAt = now
+                    )
+                }
+                val verifiedUrls = fixed.slot.publishedUrls.toMutableMap().apply {
+                    report.outcomes.filter { it.reachableOk && it.publishedPostUrl.isNotBlank() }.forEach {
+                        put(it.platform, it.publishedPostUrl)
+                    }
+                }
+                val updatedSlot = fixed.slot.copy(
+                    publishedUrls = verifiedUrls,
+                    status = if (report.outcomes.any { it.reachableOk }) PostStatus.PUBLISHED else fixed.slot.status
+                )
+                _uiState.update { current ->
+                    current.copy(
+                        isBusy = false,
+                        slots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it },
+                        publishLogs = newLogs + current.publishLogs,
+                        publishVerificationReport = report,
+                        statusMessage = report.overallSummary
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "선택 채널 일괄 검증 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun reinvestigatePostAuctionAndCreateFollowUp(
+        postId: String? = null,
+        outcomeType: PostAuctionOutcomeType,
+        actualWinningManWon: Long? = null,
+        nextAuctionDate: String? = null,
+        courtNote: String = ""
+    ) {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == (postId ?: state.selectedSlotId) }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == (postId ?: state.selectedSlotId) }?.slot
+            ?: state.slots.firstOrNull()
+            ?: return
+
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val (record, rawFollowUpSlot) = PostAuctionFollowUpEngine.reinvestigateAndBuildFollowUp(
+                    originalSlot = targetSlot,
+                    outcomeType = outcomeType,
+                    actualWinningManWon = actualWinningManWon,
+                    nextAuctionDateInput = nextAuctionDate,
+                    courtInvestigationNote = courtNote,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus
+                )
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = rawFollowUpSlot,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 2
+                )
+                val followUpSlot = fixed.slot
+                val regTemplate = RegistryInfographicEngine.buildTemplate(followUpSlot.auctionCase, state.selectedRegistryTemplateType)
+                val eval = Article30PointEvaluator.evaluate(followUpSlot, state.config, state.proFunnel, regTemplate, corpus)
+                val legal = LegalDoctrineVerifier.verify(followUpSlot.auctionCase)
+                val attractiveness = InvestmentAttractivenessEngine.score(followUpSlot.auctionCase, legal)
+                val now = currentTimestamp()
+                val whArticle = WarehouseArticle(
+                    warehouseId = "wh-${followUpSlot.auctionCase.dedupKey}",
+                    slot = followUpSlot,
+                    evaluation = eval,
+                    registryInfographic = regTemplate,
+                    warehouseStatus = if (eval.eligibleForRegistration) WarehouseArticleStatus.STORED_READY else WarehouseArticleStatus.NEEDS_IMPROVEMENT,
+                    createdAt = now
+                )
+                val log = WritingActivityLog(
+                    logId = "wlog-follow-${System.currentTimeMillis()}",
+                    warehouseId = whArticle.warehouseId,
+                    caseId = followUpSlot.auctionCase.caseId,
+                    actionTitle = "기일경과 사후재조사(${outcomeType.badge}) 후속 관련글 생성 (${eval.totalScore}점)",
+                    score = eval.totalScore,
+                    passedGate95 = eval.eligibleForRegistration,
+                    detail = record.followUpSummary,
+                    timestamp = now
+                )
+                val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+                _uiState.update { current ->
+                    current.copy(
+                        isBusy = false,
+                        slots = listOf(followUpSlot) + current.slots,
+                        selectedSlotId = followUpSlot.postId,
+                        activeRegistryInfographic = regTemplate,
+                        warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + current.warehouseArticles),
+                        writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
+                        followUpRecordsByCaseId = current.followUpRecordsByCaseId + (targetSlot.auctionCase.caseId to record),
+                        legalVerificationByCaseId = current.legalVerificationByCaseId + (followUpSlot.auctionCase.caseId to legal),
+                        attractivenessByCaseId = current.attractivenessByCaseId + (followUpSlot.auctionCase.caseId to attractiveness),
+                        statusMessage = "${record.followUpSummary} (${eval.totalScore}점)"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "사후 재조사 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun setLegalStudyFilter(category: LegalStudyCategory?, query: String) {
+        _uiState.update {
+            it.copy(
+                selectedLegalStudyCategory = category,
+                legalStudyQuery = query
+            )
+        }
+    }
+
+    private fun selectedPlatformsFromConfig(config: ServerAutomationConfig): List<ChannelPlatform> {
+        val list = mutableListOf<ChannelPlatform>()
+        if (config.publishTargetCloudflare) list += ChannelPlatform.CLOUDFLARE
+        if (config.publishTargetTistory) list += ChannelPlatform.TISTORY
+        if (config.publishTargetNaver) list += ChannelPlatform.NAVER
+        return list.ifEmpty { ChannelPlatform.entries }
     }
 
     private fun currentTimestamp(): String =
