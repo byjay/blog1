@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.content.Intent
+import android.webkit.WebView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -46,14 +47,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import com.example.ui.util.SafeClipboardHelper
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.example.engine.CourtEvidenceRecorder
 import com.example.engine.Article30PointEvaluator
+import com.example.engine.HtmlExportEngine
 import com.example.engine.InfographicBitmapRenderer
 import com.example.engine.InvestmentAttractivenessEngine
 import com.example.engine.LegalDoctrineVerifier
@@ -65,6 +70,7 @@ import com.example.model.ChannelPlatform
 import com.example.model.LegalStudyCategory
 import com.example.model.PostAuctionOutcomeType
 import com.example.model.RegistryInfographicTemplateType
+import com.example.model.VisitRecordSource
 import com.example.ui.StudioUiState
 import com.example.ui.theme.CloudflareSky
 import com.example.ui.theme.CrimsonAlert
@@ -119,6 +125,8 @@ fun ChannelQaScreen(
         courtNote: String
     ) -> Unit = { _, _, _, _, _ -> },
     onLegalStudyFilterChange: (LegalStudyCategory?, String) -> Unit = { _, _ -> },
+    onAttachCourtPhoto: (postId: String, shotOrder: Int, uriString: String) -> Unit = { _, _, _ -> },
+    onAddVisitRecord: (postId: String, source: VisitRecordSource, visitedAt: String, occupancyStatus: String, findingsNote: String) -> Unit = { _, _, _, _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val selectedSlot = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }
@@ -126,7 +134,7 @@ fun ChannelQaScreen(
         ?: uiState.slots.firstOrNull()
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
-    var previewMode by remember { mutableStateOf("BODY_TEXT") } // BODY_TEXT | HTML | JSON_LD
+    var previewMode by remember { mutableStateOf("WEB_PREVIEW") } // WEB_PREVIEW | BODY_TEXT | HTML | JSON_LD
 
     if (selectedSlot == null) {
         Column(
@@ -164,9 +172,10 @@ fun ChannelQaScreen(
         Article30PointEvaluator.evaluate(selectedSlot, uiState.config, uiState.proFunnel, activeRegistryTemplate)
     }
     val activeCourtArchive = uiState.activeCourtArchive?.takeIf {
-        it.caseId == auction.caseId
-    } ?: remember(auction.caseId) {
-        CourtEvidenceRecorder.recordFullArchive(auction)
+        it.caseId == auction.caseId &&
+            it.visitRecords.size >= selectedSlot.visitRecords.size
+    } ?: remember(auction.caseId, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords) {
+        CourtEvidenceRecorder.recordFullArchive(auction, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords)
     }
 
     LazyColumn(
@@ -202,7 +211,7 @@ fun ChannelQaScreen(
             }
         }
 
-        // 0. Court Full Archive: 5 Visible Site Photos + 3 Official Documents + Full Registry & Rights Analysis
+        // 0. Court Full Archive: 5 Visible Site Photos + 3 Official Documents + Full Registry & Rights Analysis + Visit Logs
         item {
             CourtFullEvidenceArchiveCard(
                 auction = auction,
@@ -216,6 +225,12 @@ fun ChannelQaScreen(
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     context.startActivity(Intent.createChooser(shareIntent, "${auction.caseId} 법원 현장사진 #${photo.shotOrder} 공유"))
+                },
+                onAttachPhotoUri = { shotOrder, uriString ->
+                    onAttachCourtPhoto(selectedSlot.postId, shotOrder, uriString)
+                },
+                onAddVisitRecord = { source, visitedAt, occupancyStatus, findingsNote ->
+                    onAddVisitRecord(selectedSlot.postId, source, visitedAt, occupancyStatus, findingsNote)
                 }
             )
         }
@@ -580,7 +595,18 @@ fun ChannelQaScreen(
                             }
 
                             Spacer(modifier = Modifier.height(12.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = previewMode == "WEB_PREVIEW",
+                                    onClick = { previewMode = "WEB_PREVIEW" },
+                                    label = { Text("웹 미리보기(완성글)") },
+                                    modifier = Modifier.testTag("chip_qa_web_preview")
+                                )
                                 FilterChip(
                                     selected = previewMode == "BODY_TEXT",
                                     onClick = { previewMode = "BODY_TEXT" },
@@ -601,38 +627,98 @@ fun ChannelQaScreen(
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
+                            val fullStandaloneHtml = remember(selectedSlot, activeVariant, uiState.config) {
+                                HtmlExportEngine.renderStandaloneHtmlDocument(selectedSlot, activeVariant, uiState.config)
+                            }
+                            val renderedWebPreviewHtml = remember(selectedSlot, activeVariant, uiState.config, eval30) {
+                                HtmlExportEngine.renderWebViewPreviewHtml(selectedSlot, activeVariant, uiState.config, eval30)
+                            }
                             val displayedCode = when (previewMode) {
-                                "HTML" -> activeVariant.bodyHtml
+                                "HTML" -> fullStandaloneHtml
                                 "JSON_LD" -> activeVariant.jsonLdSchema.ifBlank { "Cloudflare 전용 스키마" }
                                 else -> activeVariant.bodyText
                             }
 
-                            Surface(
-                                color = NavyBackground,
-                                shape = MaterialTheme.shapes.small,
-                                border = BorderStroke(1.dp, NavyBorder),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = displayedCode,
-                                    style = if (previewMode == "BODY_TEXT") {
-                                        MaterialTheme.typography.bodyMedium
-                                    } else {
-                                        MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFamily)
-                                    },
-                                    color = TextPrimary,
-                                    modifier = Modifier.padding(12.dp)
-                                )
+                            if (previewMode == "WEB_PREVIEW") {
+                                Surface(
+                                    color = NavyBackground,
+                                    shape = MaterialTheme.shapes.small,
+                                    border = BorderStroke(1.dp, MintSecondary.copy(alpha = 0.5f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(520.dp)
+                                ) {
+                                    AndroidView(
+                                        factory = { ctx ->
+                                            WebView(ctx).apply {
+                                                settings.javaScriptEnabled = false
+                                                settings.loadWithOverviewMode = true
+                                                settings.useWideViewPort = false
+                                                settings.allowFileAccess = false
+                                                settings.allowContentAccess = false
+                                            }
+                                        },
+                                        update = { webView ->
+                                            webView.loadDataWithBaseURL(null, renderedWebPreviewHtml, "text/html", "utf-8", null)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .testTag("qa_webview_preview")
+                                    )
+                                }
+                            } else {
+                                Surface(
+                                    color = NavyBackground,
+                                    shape = MaterialTheme.shapes.small,
+                                    border = BorderStroke(1.dp, NavyBorder),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    SelectionContainer {
+                                        Text(
+                                            text = displayedCode,
+                                            style = if (previewMode == "BODY_TEXT") {
+                                                MaterialTheme.typography.bodyMedium
+                                            } else {
+                                                MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFamily)
+                                            },
+                                            color = TextPrimary,
+                                            modifier = Modifier.padding(12.dp)
+                                        )
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(
-                                onClick = { clipboard.setText(AnnotatedString(displayedCode)) },
+                                onClick = {
+                                    val copyPayload = if (previewMode == "WEB_PREVIEW" || previewMode == "HTML") {
+                                        fullStandaloneHtml
+                                    } else {
+                                        displayedCode
+                                    }
+                                    val copyLabel = if (previewMode == "WEB_PREVIEW" || previewMode == "HTML") {
+                                        "${activeVariant.platform.displayName} 완성 HTML"
+                                    } else {
+                                        "${activeVariant.platform.displayName} 원고"
+                                    }
+                                    SafeClipboardHelper.copyPlainTextSafely(
+                                        context = context,
+                                        label = copyLabel,
+                                        text = copyPayload,
+                                        composeClipboard = clipboard
+                                    )
+                                },
                                 modifier = Modifier.height(48.dp)
                             ) {
                                 Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("${activeVariant.platform.displayName} 원고 복사")
+                                Text(
+                                    if (previewMode == "WEB_PREVIEW" || previewMode == "HTML") {
+                                        "${activeVariant.platform.displayName} 완성 HTML 복사"
+                                    } else {
+                                        "${activeVariant.platform.displayName} 원고 복사"
+                                    }
+                                )
                             }
 
                             if (activeVariant.platform == ChannelPlatform.NAVER && activeVariant.pinnedCommentSnippet.isNotBlank()) {
@@ -651,7 +737,14 @@ fun ChannelQaScreen(
                                         }
                                         Text(activeVariant.pinnedCommentSnippet, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
                                         OutlinedButton(
-                                            onClick = { clipboard.setText(AnnotatedString(activeVariant.pinnedCommentSnippet)) },
+                                            onClick = {
+                                                SafeClipboardHelper.copyPlainTextSafely(
+                                                    context = context,
+                                                    label = "네이버 고정댓글 멘트",
+                                                    text = activeVariant.pinnedCommentSnippet,
+                                                    composeClipboard = clipboard
+                                                )
+                                            },
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .height(48.dp)

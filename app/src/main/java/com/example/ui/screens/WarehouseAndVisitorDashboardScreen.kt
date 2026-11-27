@@ -85,6 +85,8 @@ fun WarehouseAndVisitorDashboardScreen(
     onDeleteWarehouseArticle: (String) -> Unit,
     onInspectArticleInQa: (String) -> Unit,
     onRefreshVisitorTelemetry: () -> Unit,
+    onRefreshQueueCharts: () -> Unit = onRefreshVisitorTelemetry,
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var activeSubTab by rememberSaveable { mutableStateOf("WAREHOUSE") } // WAREHOUSE | VISITOR_LOGS
@@ -239,6 +241,18 @@ fun WarehouseAndVisitorDashboardScreen(
                         }
                     }
                 }
+            }
+
+            item {
+                QueueAnalyticsChartsCard(
+                    analytics = uiState.queueAnalytics,
+                    telemetry = uiState.telemetry,
+                    queueSyncState = uiState.queueSyncState,
+                    compactMode = true,
+                    onRefreshServer = onRefreshVisitorTelemetry,
+                    onRefreshQueue = onRefreshQueueCharts,
+                    onOpenSettings = onOpenSettings
+                )
             }
 
             items(uiState.visitorLogs, key = { it.dateLabel }) { vLog ->

@@ -15,6 +15,7 @@ import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
@@ -40,7 +41,9 @@ interface AiSeoGeoAdvisor {
     ): AiEvaluationOutcome
 }
 
-class FirebaseAiSeoGeoService : AiSeoGeoAdvisor {
+class FirebaseAiSeoGeoService(
+    private val grokFallbackClient: GrokFallbackClient = GrokFallbackClient()
+) : AiSeoGeoAdvisor {
 
     companion object {
         private const val TAG = "AiSeoGeoService"
@@ -211,10 +214,17 @@ class FirebaseAiSeoGeoService : AiSeoGeoAdvisor {
                 parsedFixes
             }
 
+            val googleEmail = runCatching { Firebase.auth.currentUser?.email }.getOrNull()
+            val modelLabel = if (!googleEmail.isNullOrBlank()) {
+                "$MODEL_NAME (1순위 Google Gemini · $googleEmail)"
+            } else {
+                "$MODEL_NAME (1순위 Google Gemini)"
+            }
+
             AiEvaluationOutcome.Success(
                 AiEvaluationReport(
                     caseId = slot.auctionCase.caseId,
-                    modelName = MODEL_NAME,
+                    modelName = modelLabel,
                     totalScore = totalScore,
                     passedCount = passedCount,
                     aiSummary = root.optString("aiSummary", "30개 SEO/GEO 항목 검증을 완료했습니다."),
@@ -229,8 +239,12 @@ class FirebaseAiSeoGeoService : AiSeoGeoAdvisor {
             )
         } catch (e: TimeoutCancellationException) {
             Log.e(TAG, "AI 30-point evaluation timed out", e)
+            if (config.grokFallbackEnabled && grokFallbackClient.isConfigured()) {
+                val backup = grokFallbackClient.evaluateWith30CriteriaFallback(slot, config, proFunnel)
+                if (backup is AiEvaluationOutcome.Success) return backup
+            }
             AiEvaluationOutcome.Error(
-                message = "AI 채점 시간이 60초를 초과했습니다. 다시 시도해 주세요.",
+                message = "1순위 Google Gemini 시간 초과(60초) — 다시 시도하거나 Grok 보조 키를 설정해 주세요.",
                 baselineScore = baseline.totalScore,
                 baselineSuggestions = fallbackSuggestions
             )
@@ -238,8 +252,12 @@ class FirebaseAiSeoGeoService : AiSeoGeoAdvisor {
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Firebase AI 30-point evaluation failed", e)
+            if (config.grokFallbackEnabled && grokFallbackClient.isConfigured()) {
+                val backup = grokFallbackClient.evaluateWith30CriteriaFallback(slot, config, proFunnel)
+                if (backup is AiEvaluationOutcome.Success) return backup
+            }
             AiEvaluationOutcome.Error(
-                message = e.localizedMessage ?: "Firebase AI 연결 또는 App Check 인증 오류",
+                message = e.localizedMessage ?: "1순위 Google Gemini 연결 또는 App Check 인증 오류",
                 baselineScore = baseline.totalScore,
                 baselineSuggestions = fallbackSuggestions
             )

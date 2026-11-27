@@ -67,6 +67,7 @@ import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.TistoryAmber
+import com.example.ui.util.SafeClipboardHelper
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -99,7 +100,7 @@ fun ThreeChannelDestinationAndNaverVerifyCard(
     var naverRelay by remember { mutableStateOf(config.naverWorkerRelayEndpoint) }
     var tistoryUrl by remember { mutableStateOf(config.tistoryBlogUrl) }
     var tistoryCategory by remember { mutableStateOf(config.tistoryCategoryName) }
-    var cfBase by remember { mutableStateOf(config.ddakchalApiBase) }
+    var cfBase by remember { mutableStateOf(config.cloudflareSiteBase) }
     var cfPath by remember { mutableStateOf(config.cloudflareBlogPath) }
     var enableNaver by remember { mutableStateOf(config.publishTargetNaver) }
     var enableTistory by remember { mutableStateOf(config.publishTargetTistory) }
@@ -112,7 +113,7 @@ fun ThreeChannelDestinationAndNaverVerifyCard(
         naverRelay = config.naverWorkerRelayEndpoint
         tistoryUrl = config.tistoryBlogUrl
         tistoryCategory = config.tistoryCategoryName
-        cfBase = config.ddakchalApiBase
+        cfBase = config.cloudflareSiteBase
         cfPath = config.cloudflareBlogPath
         enableNaver = config.publishTargetNaver
         enableTistory = config.publishTargetTistory
@@ -277,7 +278,7 @@ fun ThreeChannelDestinationAndNaverVerifyCard(
                     OutlinedTextField(
                         value = cfBase,
                         onValueChange = { cfBase = it },
-                        label = { Text("자체웹 도메인") },
+                        label = { Text("Cloudflare 블로그 사이트 (aution.codeb.app)") },
                         singleLine = true,
                         modifier = Modifier.weight(1.4f)
                     )
@@ -366,7 +367,12 @@ fun ThreeChannelDestinationAndNaverVerifyCard(
                             appendLine("[고정댓글] $pinned")
                         }
                     }
-                    clipboard.setText(AnnotatedString(fullNaverCopy))
+                    SafeClipboardHelper.copyPlainTextSafely(
+                        context = context,
+                        label = "네이버 제목·본문·고정댓글",
+                        text = fullNaverCopy,
+                        composeClipboard = clipboard
+                    )
                 },
                 modifier = Modifier
                     .weight(1f)

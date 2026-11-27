@@ -5,10 +5,13 @@ import com.example.engine.PrivacySanitizerEngine
 import com.example.engine.QaVerificationEngine
 import com.example.engine.QualityDefenseEngine
 import com.example.model.ChannelPlatform
+import com.example.model.ChannelProbeResult
 import com.example.model.ChannelPublishDestination
 import com.example.model.ChannelDirectPublishOutcome
 import com.example.model.GeneratedPostSlot
 import com.example.model.NaverAndMultiChannelPublishReport
+import com.example.model.NaverAutoWriteMode
+import com.example.model.NaverWriteMethodGuide
 import com.example.model.PublishVerificationCheck
 import com.example.model.ServerAutomationConfig
 import com.squareup.moshi.Moshi
@@ -61,7 +64,7 @@ class DirectChannelPublishClient(
     fun buildDestinations(config: ServerAutomationConfig): List<ChannelPublishDestination> {
         val naverCleanId = normalizeNaverBlogId(config.naverBlogId)
         val tistoryCleanUrl = normalizeTistoryBaseUrl(config.tistoryBlogUrl)
-        val cfBase = config.ddakchalApiBase.trim().removeSuffix("/")
+        val cfSiteBase = resolveCloudflareSiteBase(config)
         val cfPath = config.cloudflareBlogPath.trim().let {
             if (it.startsWith("/")) it else "/$it"
         }
@@ -83,12 +86,15 @@ class DirectChannelPublishClient(
             ChannelPublishDestination(
                 platform = ChannelPlatform.CLOUDFLARE,
                 enabled = config.publishTargetCloudflare,
-                targetAddress = if (cfBase.isNotBlank()) "$cfBase$cfPath" else "",
-                categoryName = "GEO/AIO 자체웹 DB",
-                isConfigured = cfBase.isNotBlank()
+                targetAddress = "$cfSiteBase$cfPath",
+                categoryName = "GEO/AIO 자체웹 (${cfSiteBase.removePrefix("https://")})",
+                isConfigured = cfSiteBase.isNotBlank()
             )
         )
     }
+
+    fun resolveCloudflareSiteBase(config: ServerAutomationConfig): String =
+        config.cloudflareSiteBase.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
 
     fun normalizeNaverBlogId(raw: String): String {
         val trimmed = raw.trim()
@@ -121,6 +127,70 @@ class DirectChannelPublishClient(
         } else {
             "https://blog.naver.com/MyBlog.naver"
         }
+    }
+
+    suspend fun probeNaverConnection(config: ServerAutomationConfig): ChannelProbeResult = withContext(ioDispatcher) {
+        val nowTs = SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(Date())
+        val cleanId = normalizeNaverBlogId(config.naverBlogId)
+        val relay = resolveRelayEndpoint(config, "publish-naver")
+        if (cleanId.isBlank()) {
+            return@withContext ChannelProbeResult(
+                platform = ChannelPlatform.NAVER,
+                targetUrl = "",
+                reachableOk = false,
+                httpsCompliant = true,
+                httpStatusCode = 0,
+                detailMessage = "NAVER_BLOG_ID를 입력하면 비번 없이 주소·릴레이 연결을 점검합니다.",
+                checkedAt = nowTs
+            )
+        }
+        val blogUrl = "https://m.blog.naver.com/$cleanId"
+        val res = executeHttpGet(blogUrl)
+        val relayNote = if (relay.isNotBlank()) " · 워커 릴레이(${relay.substringBefore("/api")}) 준비됨" else " · 워커 미연동(수동 글쓰기창·세션 핸드오프)"
+        ChannelProbeResult(
+            platform = ChannelPlatform.NAVER,
+            targetUrl = blogUrl,
+            reachableOk = res.isSuccess,
+            httpsCompliant = blogUrl.startsWith("https://"),
+            httpStatusCode = res.statusCode,
+            detailMessage = if (res.isSuccess) {
+                "네이버 블로그 실존 확인 (HTTP ${res.statusCode})$relayNote"
+            } else {
+                "네이버 블로그 응답 확인 필요 (HTTP ${res.statusCode}: ${res.errorMessage ?: "네트워크 확인"})$relayNote"
+            },
+            checkedAt = nowTs
+        )
+    }
+
+    suspend fun probeTistoryConnection(config: ServerAutomationConfig): ChannelProbeResult = withContext(ioDispatcher) {
+        val nowTs = SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(Date())
+        val normalizedUrl = normalizeTistoryBaseUrl(config.tistoryBlogUrl)
+        if (normalizedUrl.isBlank()) {
+            return@withContext ChannelProbeResult(
+                platform = ChannelPlatform.TISTORY,
+                targetUrl = "",
+                reachableOk = false,
+                httpsCompliant = false,
+                httpStatusCode = 0,
+                detailMessage = "TISTORY_BLOG_URL (예: https://myblog.tistory.com)을 입력해 주세요.",
+                checkedAt = nowTs
+            )
+        }
+        val httpsOk = normalizedUrl.startsWith("https://")
+        val res = executeHttpGet(normalizedUrl)
+        ChannelProbeResult(
+            platform = ChannelPlatform.TISTORY,
+            targetUrl = normalizedUrl,
+            reachableOk = res.isSuccess,
+            httpsCompliant = httpsOk,
+            httpStatusCode = res.statusCode,
+            detailMessage = if (res.isSuccess) {
+                "티스토리 URL HTTP ${res.statusCode} 접속 확인 (${if (httpsOk) "HTTPS 보안 적용" else "HTTPS 전환 권장"})"
+            } else {
+                "티스토리 주소 응답 실패 (HTTP ${res.statusCode}: ${res.errorMessage ?: "도메인 오타 또는 비공개 확인"})"
+            },
+            checkedAt = nowTs
+        )
     }
 
     suspend fun publishNaverDirectAndVerify(
@@ -274,44 +344,63 @@ class DirectChannelPublishClient(
             }
         }
 
-        val targetVerifyUrl = when {
+        val hasActualPostProof = customNaverPostUrl.startsWith("http") || relayPostOk
+        val postUrlCandidate = when {
             customNaverPostUrl.startsWith("http") -> customNaverPostUrl
             relayPostUrl.startsWith("http") -> relayPostUrl
-            naverCleanId.isNotBlank() -> "https://m.blog.naver.com/$naverCleanId"
             else -> ""
         }
 
-        val getRes = if (targetVerifyUrl.isNotBlank()) executeHttpGet(targetVerifyUrl) else HttpCheckResult(0, false, "", "URL 없음")
+        if (!hasActualPostProof) {
+            val probeUrl = if (naverCleanId.isNotBlank()) "https://m.blog.naver.com/$naverCleanId" else ""
+            val probeRes = if (probeUrl.isNotBlank()) executeHttpGet(probeUrl) else HttpCheckResult(0, false, "", "미연동")
+            val homeProbeNote = if (probeRes.isSuccess) {
+                "블로그 홈(${probeUrl}) 접속 가능(HTTP ${probeRes.statusCode})이나 워커 릴레이 미연동/실패로 실제 글은 등록되지 않았습니다 (대기·실패 처리)."
+            } else {
+                "워커 릴레이 및 블로그 접속 확인 필요 (${probeRes.errorMessage ?: "HTTP ${probeRes.statusCode}"})"
+            }
+            return ChannelDirectPublishOutcome(
+                platform = ChannelPlatform.NAVER,
+                targetUrl = probeUrl,
+                executedMethod = if (relayEndpoint.isNotBlank()) "RELAY_POST_FAILED" else "RELAY_REQUIRED_NOT_PUBLISHED",
+                httpStatusCode = if (relayCode > 0) relayCode else probeRes.statusCode,
+                reachableOk = false,
+                publishedPostUrl = "",
+                message = buildString {
+                    if (relayMsg.isNotBlank()) append("$relayMsg / ")
+                    append(homeProbeNote)
+                }
+            )
+        }
+
+        val verifyUrl = postUrlCandidate.ifBlank { "https://m.blog.naver.com/$naverCleanId" }
+        val getRes = executeHttpGet(verifyUrl)
         val finalHttpCode = if (getRes.statusCode > 0) getRes.statusCode else relayCode
         val verifiedReachable = getRes.isSuccess && (
             !getRes.body.contains("존재하지 않는 게시물") &&
                 !getRes.body.contains("삭제되었거나")
             )
 
-        val methodLabel = if (relayEndpoint.isNotBlank()) "RELAY_POST + HTTP_GET" else "HTTP_GET_VERIFY"
+        val methodLabel = if (relayPostOk) "RELAY_POST + HTTP_GET" else "CUSTOM_POST_URL_VERIFY"
         val combinedMessage = buildString {
             if (relayMsg.isNotBlank()) {
                 append(relayMsg)
                 append(" / ")
             }
             if (verifiedReachable) {
-                if (customNaverPostUrl.isNotBlank() || relayPostOk) {
-                    append("실제 네이버 URL 도달 확인 (HTTP ${getRes.statusCode})")
-                } else {
-                    append("네이버 블로그 홈(m.blog.naver.com/$naverCleanId) 실존 확인 (HTTP ${getRes.statusCode}) · 워커 미연결 시 글쓰기 창 연동 후 게시물 URL 검증")
-                }
+                append("실제 네이버 게시물 URL 도달 확인 (HTTP ${getRes.statusCode})")
             } else {
-                append("HTTP GET 검증 실패 (${getRes.statusCode}: ${getRes.errorMessage ?: "블로그 주소 또는 네트워크 확인 필요"})")
+                append("HTTP GET 검증 실패 (${getRes.statusCode}: ${getRes.errorMessage ?: "게시물 주소 또는 네트워크 확인 필요"})")
             }
         }
 
         return ChannelDirectPublishOutcome(
             platform = ChannelPlatform.NAVER,
-            targetUrl = targetVerifyUrl,
+            targetUrl = verifyUrl,
             executedMethod = methodLabel,
             httpStatusCode = finalHttpCode,
             reachableOk = verifiedReachable,
-            publishedPostUrl = if (verifiedReachable) targetVerifyUrl else "",
+            publishedPostUrl = if (verifiedReachable) verifyUrl else "",
             message = combinedMessage
         )
     }
@@ -334,7 +423,9 @@ class DirectChannelPublishClient(
         }
         val relayEndpoint = resolveRelayEndpoint(config, "publish-tistory")
         val tsVariant = slot.variants[ChannelPlatform.TISTORY]
+        var relayPostOk = false
         var relayPostUrl = ""
+        var relayCode = 0
         var relayNote = ""
         if (relayEndpoint.isNotBlank() && tsVariant != null) {
             val payload = RelayPublishPayload(
@@ -350,23 +441,44 @@ class DirectChannelPublishClient(
                 pinnedComment = ""
             )
             val postRes = executeJsonPost(relayEndpoint, config.crawlerSyncToken, payloadAdapter.toJson(payload))
+            relayCode = postRes.statusCode
             if (postRes.isSuccess) {
+                relayPostOk = true
                 relayPostUrl = extractUrlFromJson(postRes.body)
                 relayNote = "릴레이 POST 성공(${postRes.statusCode}) / "
             } else {
                 relayNote = "릴레이 HTTP ${postRes.statusCode} / "
             }
         }
+
+        if (!relayPostOk) {
+            val probeRes = executeHttpGet(baseUrl)
+            val probeNote = if (probeRes.isSuccess) {
+                "티스토리 홈($baseUrl)은 응답(HTTP ${probeRes.statusCode})하나 워커 릴레이 미연동/실패로 실제 글 미발행 (대기·실패 처리)"
+            } else {
+                "티스토리 릴레이/도메인 확인 필요 (HTTP ${probeRes.statusCode})"
+            }
+            return ChannelDirectPublishOutcome(
+                platform = ChannelPlatform.TISTORY,
+                targetUrl = baseUrl,
+                executedMethod = if (relayEndpoint.isNotBlank()) "RELAY_POST_FAILED" else "RELAY_REQUIRED_NOT_PUBLISHED",
+                httpStatusCode = if (relayCode > 0) relayCode else probeRes.statusCode,
+                reachableOk = false,
+                publishedPostUrl = "",
+                message = "$relayNote$probeNote"
+            )
+        }
+
         val checkUrl = relayPostUrl.ifBlank { baseUrl }
         val getRes = executeHttpGet(checkUrl)
         return ChannelDirectPublishOutcome(
             platform = ChannelPlatform.TISTORY,
             targetUrl = checkUrl,
-            executedMethod = if (relayEndpoint.isNotBlank()) "RELAY_POST + HTTP_GET" else "HTTP_GET_VERIFY",
+            executedMethod = "RELAY_POST + HTTP_GET",
             httpStatusCode = getRes.statusCode,
             reachableOk = getRes.isSuccess,
             publishedPostUrl = if (getRes.isSuccess) checkUrl else "",
-            message = "$relayNote${if (getRes.isSuccess) "티스토리 도달 확인 (HTTP ${getRes.statusCode})" else "도달 실패 (HTTP ${getRes.statusCode}: ${getRes.errorMessage ?: "URL 확인 필요"})"}"
+            message = "$relayNote${if (getRes.isSuccess) "티스토리 실제 게시물 도달 확인 (HTTP ${getRes.statusCode})" else "도달 실패 (HTTP ${getRes.statusCode}: ${getRes.errorMessage ?: "URL 확인 필요"})"}"
         )
     }
 
@@ -374,21 +486,11 @@ class DirectChannelPublishClient(
         slot: GeneratedPostSlot,
         config: ServerAutomationConfig
     ): ChannelDirectPublishOutcome {
-        val cfBase = config.ddakchalApiBase.trim().removeSuffix("/")
+        val cfSiteBase = resolveCloudflareSiteBase(config)
         val cfPath = config.cloudflareBlogPath.trim().let { if (it.startsWith("/")) it else "/$it" }
-        if (cfBase.isBlank()) {
-            return ChannelDirectPublishOutcome(
-                platform = ChannelPlatform.CLOUDFLARE,
-                targetUrl = "",
-                executedMethod = "CONFIG_CHECK",
-                httpStatusCode = 0,
-                reachableOk = false,
-                publishedPostUrl = "",
-                message = "Cloudflare 자체 도메인(DDAKCHAL_API_BASE)을 입력해 주세요."
-            )
-        }
-        val targetUrl = "$cfBase$cfPath/${slot.auctionCase.dedupKey}"
+        val targetUrl = "$cfSiteBase$cfPath/${slot.auctionCase.dedupKey}"
         var d1StatusNote = ""
+        var d1InsertedOk = false
         if (config.cfAccountId.isNotBlank() && config.cfD1DatabaseId.isNotBlank() && config.cfApiToken.isNotBlank()) {
             val cfVariant = slot.variants[ChannelPlatform.CLOUDFLARE]
             if (cfVariant != null) {
@@ -411,18 +513,111 @@ class DirectChannelPublishClient(
                         slot.scheduledTimes[ChannelPlatform.CLOUDFLARE] ?: slot.publishDate
                     )
                 )
+                d1InsertedOk = res.isSuccess
                 d1StatusNote = if (res.isSuccess) "D1 저장 성공 / " else "D1 HTTP ${res.statusCode} / "
             }
         }
-        val getRes = executeHttpGet(cfBase)
+        val checkUrl = if (d1InsertedOk) cfSiteBase else targetUrl
+        val getRes = executeHttpGet(checkUrl)
+        val ok = if (d1InsertedOk) getRes.isSuccess else getRes.isSuccess
         return ChannelDirectPublishOutcome(
             platform = ChannelPlatform.CLOUDFLARE,
             targetUrl = targetUrl,
-            executedMethod = if (d1StatusNote.isNotBlank()) "CF_D1_UPSERT + HTTP_GET" else "HTTP_GET_VERIFY",
+            executedMethod = if (d1InsertedOk) "CF_D1_UPSERT + HTTP_GET" else "POST_PATH_HTTP_GET_VERIFY",
             httpStatusCode = getRes.statusCode,
-            reachableOk = getRes.isSuccess,
-            publishedPostUrl = if (getRes.isSuccess) targetUrl else "",
-            message = "$d1StatusNote${if (getRes.isSuccess) "자체웹 응답 정상 (HTTP ${getRes.statusCode})" else "자체웹 응답 실패 (HTTP ${getRes.statusCode}: ${getRes.errorMessage ?: "도메인 확인 필요"})"}"
+            reachableOk = ok,
+            publishedPostUrl = if (ok) targetUrl else "",
+            message = "$d1StatusNote${if (ok) "$checkUrl 응답 정상 (HTTP ${getRes.statusCode})" else "$targetUrl 미게시/응답 실패 (HTTP ${getRes.statusCode}: D1 토큰 설정 또는 Worker 배포 확인)"}"
+        )
+    }
+
+    suspend fun verifyUrlReachable(url: String): Pair<Boolean, Int> = withContext(ioDispatcher) {
+        if (!url.startsWith("http")) return@withContext false to 0
+        val res = executeHttpGet(url)
+        res.isSuccess to res.statusCode
+    }
+
+    suspend fun probeAlwaysLoggedInHeartbeat(
+        config: ServerAutomationConfig
+    ): Triple<ChannelProbeResult, ChannelProbeResult, ChannelProbeResult> = withContext(ioDispatcher) {
+        val nowTs = SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(Date())
+        val naverProbe = probeNaverConnection(config)
+        val tistoryProbe = probeTistoryConnection(config)
+        val cfSiteBase = resolveCloudflareSiteBase(config)
+        val cfRes = executeHttpGet(cfSiteBase)
+        val cfProbe = ChannelProbeResult(
+            platform = ChannelPlatform.CLOUDFLARE,
+            targetUrl = cfSiteBase,
+            reachableOk = cfRes.isSuccess,
+            httpsCompliant = cfSiteBase.startsWith("https://"),
+            httpStatusCode = cfRes.statusCode,
+            detailMessage = if (cfRes.isSuccess) {
+                "$cfSiteBase 정상 응답 (HTTP ${cfRes.statusCode})"
+            } else {
+                "$cfSiteBase 연결 확인 필요 (HTTP ${cfRes.statusCode}: ${cfRes.errorMessage ?: "DNS/Pages 배포 대기"})"
+            },
+            checkedAt = nowTs
+        )
+        Triple(naverProbe, tistoryProbe, cfProbe)
+    }
+
+    fun buildAlternateNaverWriteGuides(
+        config: ServerAutomationConfig,
+        sampleSlot: GeneratedPostSlot? = null
+    ): List<NaverWriteMethodGuide> {
+        val naverId = normalizeNaverBlogId(config.naverBlogId)
+        val relay = resolveRelayEndpoint(config, "publish-naver")
+        val sampleVariant = sampleSlot?.variants?.get(ChannelPlatform.NAVER)
+        val assistUrl = buildNaverWriteAssistUrl(
+            naverBlogId = naverId,
+            title = sampleVariant?.title.orEmpty(),
+            bodyText = sampleVariant?.bodyText.orEmpty()
+        )
+        return listOf(
+            NaverWriteMethodGuide(
+                mode = NaverAutoWriteMode.WORKER_RELAY,
+                isActive = config.naverWriteMode == NaverAutoWriteMode.WORKER_RELAY,
+                readinessLabel = if (relay.isNotBlank()) "릴레이 준비됨 (${relay.substringBefore("/api")})" else "릴레이 URL/토큰 대기",
+                setupSteps = listOf(
+                    "PC 또는 서버에서 Playwright로 네이버 로그인 후 session_naver.json(storage_state) 저장",
+                    "설정·보안 탭에 NAVER_BLOG_ID + 워커 릴레이 URL(또는 CRAWLER_SYNC_TOKEN) 입력",
+                    "'95+ 바로 등록' 실행 시 POST /publish-naver로 무인 자동 포스팅 및 HTTP 검증"
+                ),
+                quickActionUrl = relay
+            ),
+            NaverWriteMethodGuide(
+                mode = NaverAutoWriteMode.MOBILE_WRITE_URL,
+                isActive = config.naverWriteMode == NaverAutoWriteMode.MOBILE_WRITE_URL,
+                readinessLabel = if (naverId.isNotBlank()) "즉시 실행 가능 (로그인 유지 연동)" else "NAVER_BLOG_ID 입력 필요",
+                setupSteps = listOf(
+                    "앱 내 '항상 로그인 유지'로 폰 브라우저(Chrome)에 네이버 로그인을 1회만 유지",
+                    "'제목·본문·고정댓글 복사' 후 '네이버 글쓰기 열기' 클릭",
+                    "스마트에디터 ONE에 붙여넣기 → 발행(가장 저품질 위험이 적은 안전 자동화)"
+                ),
+                quickActionUrl = assistUrl
+            ),
+            NaverWriteMethodGuide(
+                mode = NaverAutoWriteMode.POST_MAIL_BRIDGE,
+                isActive = config.naverWriteMode == NaverAutoWriteMode.POST_MAIL_BRIDGE,
+                readinessLabel = "네이버 공식 기능 (캡차 무발생)",
+                setupSteps = listOf(
+                    "네이버 블로그 > 관리 > 기본 설정 > '글쓰기 메일'에서 전용 이메일 주소 활성화",
+                    "발송 허용 이메일에 본인 메일 등록 후 Cloudflare Worker/SMTP로 원고+이미지 전송",
+                    "네이버가 메일 제목/본문을 자동으로 블로그 글로 등록(이후 고정댓글만 보완)"
+                ),
+                quickActionUrl = if (naverId.isNotBlank()) "https://blog.naver.com/$naverId" else "https://section.blog.naver.com/"
+            ),
+            NaverWriteMethodGuide(
+                mode = NaverAutoWriteMode.SESSION_HANDOFF,
+                isActive = config.naverWriteMode == NaverAutoWriteMode.SESSION_HANDOFF,
+                readinessLabel = if (config.naverKeepLoggedIn) "상시 세션 유지 ON" else "유지 OFF",
+                setupSteps = listOf(
+                    "비밀번호를 기기에 저장하지 않고 브라우저 쿠키·세션만 유지하는 Zero-Password 방식",
+                    "'HTML 3개 생성 → 블로그 붙여넣기(<article>)' 복사 후 HTML/에디터에 즉시 등록",
+                    "캡차/2차 인증 시 '세션 복구' 1터치로 자동화 큐 재개"
+                ),
+                quickActionUrl = "https://nid.naver.com/nidlogin.login"
+            )
         )
     }
 
@@ -539,6 +734,7 @@ class DirectChannelPublishClient(
             .header("Content-Type", "application/json")
         if (token.isNotBlank()) {
             reqBuilder.header("Authorization", "Bearer $token")
+            reqBuilder.header("X-Crawler-Sync-Token", token)
         }
         httpClient.newCall(reqBuilder.build()).execute().use { resp ->
             HttpCheckResult(

@@ -4,9 +4,13 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.ai.AiCaseSearchAdvisor
+import com.example.ai.AiCaseSearchOutcome
 import com.example.ai.AiEvaluationOutcome
 import com.example.ai.AiSeoGeoAdvisor
+import com.example.ai.FirebaseAiCaseSearchService
 import com.example.ai.FirebaseAiSeoGeoService
+import com.example.ai.GoogleAccountAuthHelper
 import com.example.data.BlogAutomationRepository
 import com.example.data.BlogPostTemplateStore
 import com.example.data.DirectChannelPublishClient
@@ -18,43 +22,67 @@ import com.example.data.ServerConfigStore
 import com.example.engine.Article30PointEvaluator
 import com.example.engine.BlogPostTemplateEngine
 import com.example.engine.BoilerplateAndTemplateEngine
+import com.example.engine.ChannelIndexRiskEngine
 import com.example.engine.CourtEvidenceRecorder
 import com.example.engine.DefaultSpecDataFactory
+import com.example.engine.HtmlExportEngine
 import com.example.engine.InvestmentAttractivenessEngine
 import com.example.engine.LegalDoctrineVerifier
 import com.example.engine.NearbyMarketEngine
 import com.example.engine.PostAuctionFollowUpEngine
+import com.example.engine.PrivacySanitizerEngine
 import com.example.engine.QaVerificationEngine
 import com.example.engine.QualityDefenseEngine
 import com.example.engine.RegistryInfographicEngine
+import com.example.engine.SecurityAuditEngine
 import com.example.engine.SeoGuideEngine
+import com.example.engine.TopicSelectionEngine
 import com.example.engine.WeeklyBatchScheduleEngine
+import com.example.model.AiCaseSearchUiState
 import com.example.model.AiEvalUiState
 import com.example.model.AuctionCaseIntel
 import com.example.model.BlogPostTemplate
 import com.example.model.ChannelPlatform
+import com.example.model.ChannelProbeResult
 import com.example.model.CourtFullArchiveRecord
+import com.example.model.DdakchalFullDiagnosticReport
+import com.example.model.FieldVisitRecord
 import com.example.model.GeneratedPostSlot
+import com.example.model.GoogleGeminiAccountState
+import com.example.model.HtmlBatchBundleState
 import com.example.model.InvestmentAttractivenessScore
 import com.example.model.LegalDoctrineReport
 import com.example.model.LegalStudyCategory
+import com.example.model.LowQualityRiskLevel
+import com.example.model.LowQualityRiskReport
 import com.example.model.NaverAndMultiChannelPublishReport
+import com.example.model.NaverAutoWriteMode
+import com.example.model.NaverKeywordDiagnosisUiState
+import com.example.model.NaverPublishStatusRecord
+import com.example.model.NaverWriteMethodGuide
 import com.example.model.NearbyMarketAnalysisReport
 import com.example.model.PostAuctionFollowUpRecord
 import com.example.model.PostAuctionOutcomeType
 import com.example.model.PostStatus
 import com.example.model.ProFunnelConfig
+import com.example.model.VisitRecordSource
 import com.example.model.PropertyTemplateYaml
 import com.example.model.PropertyType
 import com.example.model.PublishLogEntry
 import com.example.model.QualityDefenseModuleState
+import com.example.model.QueueAnalyticsSummary
+import com.example.model.QueueSyncState
 import com.example.model.RegistryInfographicTemplate
 import com.example.model.RegistryInfographicTemplateType
+import com.example.model.SecurityDashboardSummary
+import com.example.model.SecurityGrade
 import com.example.model.SeoChecklistItem
 import com.example.model.SeoRuleCategory
 import com.example.model.SeoRulePriority
 import com.example.model.ServerAutomationConfig
 import com.example.model.ServerTelemetryState
+import com.example.model.TopicSelectionBoardState
+import com.example.model.TopicSortCriteria
 import com.example.model.VisitorTrafficLog
 import com.example.model.WarehouseArticle
 import com.example.model.WarehouseArticleStatus
@@ -66,6 +94,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -85,7 +115,7 @@ data class StudioUiState(
     val postTemplates: List<BlogPostTemplate> = BlogPostTemplateEngine.defaultBlogPostTemplates(),
     val seoChecklist: List<SeoChecklistItem> = SeoGuideEngine.defaultChecklistItems(),
     val proFunnel: ProFunnelConfig = ProFunnelConfig(),
-    val publishLogs: List<PublishLogEntry> = DefaultSpecDataFactory.buildInitialLogs(),
+    val publishLogs: List<PublishLogEntry> = emptyList(),
     val config: ServerAutomationConfig = ServerAutomationConfig(),
     val telemetry: ServerTelemetryState = ServerTelemetryState(),
     val activeHandoffAlert: String? = null,
@@ -102,6 +132,39 @@ data class StudioUiState(
     val attractivenessByCaseId: Map<String, InvestmentAttractivenessScore> = emptyMap(),
     val selectedLegalStudyCategory: LegalStudyCategory? = null,
     val legalStudyQuery: String = "",
+    val isMobileSimpleMode: Boolean = true,
+    val queueSyncState: QueueSyncState = QueueSyncState.Idle,
+    val queueAnalytics: QueueAnalyticsSummary = QueueAnalyticsSummary(
+        totalSlots = 0,
+        publishedCount = 0,
+        queuedCount = 0,
+        failedOrHandoffCount = 0,
+        draftCount = 0,
+        successRatePct = 0,
+        failureRatePct = 0,
+        dailySeries = emptyList(),
+        channelStats = emptyList()
+    ),
+    val lowQualityRiskReport: LowQualityRiskReport? = null,
+    val autoPublishPausedByRisk: Boolean = false,
+    val autoPublishPauseReason: String? = null,
+    val securityDashboard: SecurityDashboardSummary = SecurityAuditEngine.auditSecurity(
+        config = ServerAutomationConfig(),
+        slots = emptyList(),
+        publishLogs = emptyList(),
+        nowText = "초기 점검"
+    ),
+    val naverProbeResult: ChannelProbeResult? = null,
+    val tistoryProbeResult: ChannelProbeResult? = null,
+    val aiCaseSearchState: AiCaseSearchUiState = AiCaseSearchUiState.Idle,
+    val naverKeywordDiagnosis: NaverKeywordDiagnosisUiState = NaverKeywordDiagnosisUiState.Idle,
+    val htmlBatchBundle: HtmlBatchBundleState? = null,
+    val topicSelectionBoard: TopicSelectionBoardState = TopicSelectionBoardState(),
+    val ddakchalFullDiagnostic: DdakchalFullDiagnosticReport? = null,
+    val googleAccount: GoogleGeminiAccountState = GoogleGeminiAccountState(),
+    val naverPublishStatuses: List<NaverPublishStatusRecord> = emptyList(),
+    val naverWriteGuides: List<NaverWriteMethodGuide> = emptyList(),
+    val lastAiEngineUsed: String = "1순위 Google Gemini (Firebase AI)",
     val statusMessage: String? = null,
     val errorMessage: String? = null
 )
@@ -110,11 +173,13 @@ class StudioViewModel(
     private val repository: BlogAutomationRepository,
     private val aiAdvisor: AiSeoGeoAdvisor = FirebaseAiSeoGeoService(),
     private val naverApiClient: NaverRealEstateApiClient = NaverRealEstateApiClient(),
-    private val directPublishClient: DirectChannelPublishClient = DirectChannelPublishClient()
+    private val directPublishClient: DirectChannelPublishClient = DirectChannelPublishClient(),
+    private val aiCaseSearchAdvisor: AiCaseSearchAdvisor = FirebaseAiCaseSearchService()
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(StudioUiState())
     val uiState: StateFlow<StudioUiState> = _uiState.asStateFlow()
+    private val configSaveMutex = Mutex()
 
     init {
         val initialConfig = ServerAutomationConfig()
@@ -125,7 +190,9 @@ class StudioViewModel(
         val initialInfographic = firstAuction?.let {
             RegistryInfographicEngine.buildTemplate(it, RegistryInfographicTemplateType.COMBINED_EXPERT_BOARD)
         }
-        val initialArchive = firstAuction?.let { CourtEvidenceRecorder.recordFullArchive(it) }
+        val initialArchive = firstSlot?.let {
+            CourtEvidenceRecorder.recordFullArchive(it.auctionCase, it.courtPhotoUrls, it.visitRecords)
+        }
         val initialLegalMap = initialSlots.associate { slot ->
             slot.auctionCase.caseId to LegalDoctrineVerifier.verify(slot.auctionCase)
         }
@@ -141,6 +208,33 @@ class StudioViewModel(
                 auction = firstSlot.auctionCase
             )
         }
+        val initialTopics = TopicSelectionEngine.rankCandidates(
+            slots = initialSlots,
+            config = initialConfig,
+            proFunnel = ProFunnelConfig(),
+            sortMode = TopicSortCriteria.BALANCED_4_PILLAR,
+            nowText = currentTimestamp()
+        )
+        val initialLogs = _uiState.value.publishLogs
+        val initialNaverStatuses = buildNaverPublishStatuses(initialSlots, initialLogs, initialConfig)
+        val initialGuides = directPublishClient.buildAlternateNaverWriteGuides(initialConfig, firstSlot)
+        val initialGoogleAccount = GoogleAccountAuthHelper.currentGoogleAccountState(
+            primaryGeminiFirst = initialConfig.aiPrimaryGeminiFirst,
+            grokFallbackEnabled = initialConfig.grokFallbackEnabled,
+            grokModelName = initialConfig.grokModelName
+        )
+        val nowInit = currentTimestamp()
+        val initialRiskReport = ChannelIndexRiskEngine.evaluate(
+            config = initialConfig,
+            slots = initialSlots,
+            publishLogs = initialLogs,
+            visitorLogs = initialSeed.visitorLogs,
+            queueSyncState = QueueSyncState.Idle,
+            naverKeywordReport = null,
+            alreadyPausedByRisk = false,
+            nowText = nowInit
+        )
+
         _uiState.update {
             it.copy(
                 slots = initialSlots,
@@ -157,13 +251,26 @@ class StudioViewModel(
                     lastAuditedCaseId = firstAuction?.caseId.orEmpty(),
                     lastChannel = ChannelPlatform.NAVER,
                     lastResult = initialDefense,
-                    lastUpdatedAt = currentTimestamp()
+                    lastUpdatedAt = nowInit
                 ),
                 telemetry = it.telemetry.copy(
                     dailyQuotaUsed = initialSlots.count { slot ->
                         slot.status == PostStatus.PUBLISHED || slot.status == PostStatus.QUEUED
                     }
-                )
+                ),
+                lowQualityRiskReport = initialRiskReport,
+                autoPublishPausedByRisk = initialRiskReport.autoPublishPaused,
+                autoPublishPauseReason = initialRiskReport.pauseReason,
+                securityDashboard = SecurityAuditEngine.auditSecurity(
+                    config = initialConfig,
+                    slots = initialSlots,
+                    publishLogs = it.publishLogs,
+                    nowText = nowInit
+                ),
+                topicSelectionBoard = initialTopics,
+                naverPublishStatuses = initialNaverStatuses,
+                naverWriteGuides = initialGuides,
+                googleAccount = initialGoogleAccount
             )
         }
         observePersistedConfig()
@@ -229,7 +336,49 @@ class StudioViewModel(
                         )
                         slot.copy(qaReport = qa)
                     }
-                    state.copy(config = savedConfig, slots = reAuditedSlots)
+                    val firstActive = reAuditedSlots.firstOrNull { it.postId == state.selectedSlotId } ?: reAuditedSlots.firstOrNull()
+                    val nowText = currentTimestamp()
+                    val riskReport = ChannelIndexRiskEngine.evaluate(
+                        config = savedConfig,
+                        slots = reAuditedSlots,
+                        publishLogs = state.publishLogs,
+                        visitorLogs = state.visitorLogs,
+                        queueSyncState = state.queueSyncState,
+                        naverKeywordReport = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        alreadyPausedByRisk = state.autoPublishPausedByRisk,
+                        nowText = nowText
+                    )
+                    state.copy(
+                        config = savedConfig,
+                        slots = reAuditedSlots,
+                        lowQualityRiskReport = riskReport,
+                        autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                        autoPublishPauseReason = riskReport.pauseReason,
+                        securityDashboard = SecurityAuditEngine.auditSecurity(
+                            config = savedConfig,
+                            slots = reAuditedSlots,
+                            publishLogs = state.publishLogs,
+                            naverReachable = state.naverProbeResult?.reachableOk,
+                            tistoryReachable = state.tistoryProbeResult?.reachableOk,
+                            nowText = nowText
+                        ),
+                        topicSelectionBoard = TopicSelectionEngine.rankCandidates(
+                            slots = reAuditedSlots,
+                            config = savedConfig,
+                            proFunnel = state.proFunnel,
+                            sortMode = state.topicSelectionBoard.sortMode,
+                            naverKeywordDiagnosis = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                            nowText = nowText
+                        ),
+                        naverPublishStatuses = buildNaverPublishStatuses(reAuditedSlots, state.publishLogs, savedConfig),
+                        naverWriteGuides = directPublishClient.buildAlternateNaverWriteGuides(savedConfig, firstActive),
+                        googleAccount = GoogleAccountAuthHelper.currentGoogleAccountState(
+                            primaryGeminiFirst = savedConfig.aiPrimaryGeminiFirst,
+                            grokFallbackEnabled = savedConfig.grokFallbackEnabled,
+                            grokModelName = savedConfig.grokModelName,
+                            statusOverride = state.googleAccount.lastSignInStatus.takeIf { state.googleAccount.isSignedIn }
+                        )
+                    )
                 }
             }
         }
@@ -275,8 +424,8 @@ class StudioViewModel(
                 activeRegistryInfographic = targetAuction?.let {
                     RegistryInfographicEngine.buildTemplate(it, state.selectedRegistryTemplateType)
                 } ?: state.activeRegistryInfographic,
-                activeCourtArchive = targetAuction?.let {
-                    CourtEvidenceRecorder.recordFullArchive(it)
+                activeCourtArchive = targetSlot?.let {
+                    CourtEvidenceRecorder.recordFullArchive(it.auctionCase, it.courtPhotoUrls, it.visitRecords)
                 } ?: state.activeCourtArchive,
                 legalVerificationByCaseId = legalMap,
                 qualityDefenseState = if (defenseRes != null) {
@@ -287,6 +436,86 @@ class StudioViewModel(
                         lastUpdatedAt = currentTimestamp()
                     )
                 } else state.qualityDefenseState
+            )
+        }
+    }
+
+    fun attachCourtPhotoToSlot(
+        postId: String,
+        shotOrder: Int,
+        photoUriString: String
+    ) {
+        val cleanUri = photoUriString.trim()
+        if (cleanUri.isBlank()) return
+        val safeIdx = (shotOrder - 1).coerceIn(0, 4)
+
+        _uiState.update { state ->
+            val targetSlot = state.slots.firstOrNull { it.postId == postId }
+                ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+                ?: return@update state
+            val nextUrls = MutableList(maxOf(5, targetSlot.courtPhotoUrls.size)) { i ->
+                targetSlot.courtPhotoUrls.getOrNull(i).orEmpty()
+            }.apply {
+                this[safeIdx] = cleanUri
+            }
+            val updatedSlot = targetSlot.copy(courtPhotoUrls = nextUrls)
+            val updatedArchive = CourtEvidenceRecorder.recordFullArchive(
+                auction = updatedSlot.auctionCase,
+                courtPhotoUrls = updatedSlot.courtPhotoUrls,
+                customVisitRecords = updatedSlot.visitRecords
+            )
+            state.copy(
+                slots = state.slots.map { if (it.postId == postId) updatedSlot else it },
+                warehouseArticles = state.warehouseArticles.map { art ->
+                    if (art.slot.postId == postId) art.copy(slot = updatedSlot) else art
+                },
+                activeCourtArchive = if (state.selectedSlotId == postId) updatedArchive else state.activeCourtArchive,
+                statusMessage = "${updatedSlot.auctionCase.caseId} 법원·현장 실사 사진 #${safeIdx + 1} 첨부 완료"
+            )
+        }
+    }
+
+    fun addFieldVisitRecord(
+        postId: String,
+        source: VisitRecordSource,
+        visitedAt: String,
+        occupancyStatus: String,
+        findingsNote: String,
+        attachedPhotoUri: String = ""
+    ) {
+        val cleanFindings = PrivacySanitizerEngine.sanitizeForPublicBlog(findingsNote.trim())
+        if (cleanFindings.isBlank()) return
+        val cleanOccupancy = PrivacySanitizerEngine.sanitizeForPublicBlog(occupancyStatus.trim().ifBlank { "현장 점유 확인" })
+        val cleanDate = visitedAt.trim().ifBlank { PostAuctionFollowUpEngine.currentIsoDate() }
+
+        _uiState.update { state ->
+            val targetSlot = state.slots.firstOrNull { it.postId == postId }
+                ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+                ?: return@update state
+            val newRecord = FieldVisitRecord(
+                visitId = "visit-${System.currentTimeMillis()}",
+                visitRound = "${targetSlot.visitRecords.size + 1}차 ${source.badgeText}",
+                visitedAt = cleanDate,
+                source = source,
+                visitorLabel = "직접 현장 임장 기록",
+                occupancyStatus = cleanOccupancy,
+                findingsNote = cleanFindings,
+                attachedPhotoUri = attachedPhotoUri.trim()
+            )
+            val updatedVisits = listOf(newRecord) + targetSlot.visitRecords
+            val updatedSlot = targetSlot.copy(visitRecords = updatedVisits)
+            val updatedArchive = CourtEvidenceRecorder.recordFullArchive(
+                auction = updatedSlot.auctionCase,
+                courtPhotoUrls = updatedSlot.courtPhotoUrls,
+                customVisitRecords = updatedSlot.visitRecords
+            )
+            state.copy(
+                slots = state.slots.map { if (it.postId == postId) updatedSlot else it },
+                warehouseArticles = state.warehouseArticles.map { art ->
+                    if (art.slot.postId == postId) art.copy(slot = updatedSlot) else art
+                },
+                activeCourtArchive = if (state.selectedSlotId == postId) updatedArchive else state.activeCourtArchive,
+                statusMessage = "${updatedSlot.auctionCase.caseId} ${source.label} 방문기록 1건 추가 완료"
             )
         }
     }
@@ -336,6 +565,270 @@ class StudioViewModel(
         _uiState.update { it.copy(statusMessage = null, errorMessage = null) }
     }
 
+    fun setMobileSimpleMode(simple: Boolean) {
+        _uiState.update { it.copy(isMobileSimpleMode = simple) }
+    }
+
+    fun toggleAutoMonitorPolling(enabled: Boolean) {
+        _uiState.update {
+            it.copy(
+                telemetry = it.telemetry.copy(autoMonitorEnabled = enabled),
+                statusMessage = if (enabled) "딱찰 서버 실시간 자동 모니터링을 켰습니다." else "실시간 자동 폴링을 일시 정지했습니다."
+            )
+        }
+    }
+
+    fun refreshDdakchalServerTelemetry(alsoSyncFeed: Boolean = true) {
+        val cfg = _uiState.value.config
+        if (cfg.ddakchalApiBase.isBlank()) return
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(telemetry = it.telemetry.copy(isPinging = true))
+            }
+            try {
+                val triggerOutcome = repository.fetchTriggerStatusWithTelemetry(cfg)
+                val now = currentTimestamp()
+                val nowMs = System.currentTimeMillis()
+                var mergedSlots = _uiState.value.slots
+                var nextCursor = _uiState.value.telemetry.lastFeedCursorSince
+                var latestLatency = triggerOutcome.latencyMs
+                var latestHttpCode = triggerOutcome.httpStatusCode
+                var latestError = triggerOutcome.errorMessage
+                var connected = triggerOutcome.isSuccess
+
+                if (alsoSyncFeed) {
+                    val feedOutcome = repository.syncAnalysisFeedWithTelemetry(
+                        config = cfg,
+                        limit = 10,
+                        since = nextCursor
+                    )
+                    if (feedOutcome.latencyMs > 0L) {
+                        latestLatency = feedOutcome.latencyMs
+                    }
+                    if (feedOutcome.isSuccess) {
+                        connected = true
+                        latestHttpCode = feedOutcome.httpStatusCode
+                        latestError = null
+                        if (!feedOutcome.nextCursorSince.isNullOrBlank()) {
+                            nextCursor = feedOutcome.nextCursorSince
+                        }
+                        val incoming = feedOutcome.data.orEmpty()
+                        if (incoming.isNotEmpty()) {
+                            val existingByKey = mergedSlots.associateBy { it.auctionCase.caseId }.toMutableMap()
+                            incoming.forEach { slot ->
+                                existingByKey[slot.auctionCase.caseId] = slot
+                            }
+                            mergedSlots = (incoming + mergedSlots.filter { old ->
+                                incoming.none { inc -> inc.auctionCase.caseId == old.auctionCase.caseId }
+                            })
+                        }
+                    } else if (!triggerOutcome.isSuccess) {
+                        latestError = feedOutcome.errorMessage ?: triggerOutcome.errorMessage
+                        latestHttpCode = feedOutcome.httpStatusCode
+                    }
+                }
+
+                _uiState.update { current ->
+                    val newLegal = current.legalVerificationByCaseId.toMutableMap()
+                    val newAttr = current.attractivenessByCaseId.toMutableMap()
+                    mergedSlots.forEach { slot ->
+                        if (!newLegal.containsKey(slot.auctionCase.caseId)) {
+                            val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
+                            newLegal[slot.auctionCase.caseId] = legal
+                            newAttr[slot.auctionCase.caseId] = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
+                        }
+                    }
+                    val updatedTrigger = triggerOutcome.data ?: current.telemetry.triggerStatus
+                    current.copy(
+                        slots = mergedSlots,
+                        selectedSlotId = current.selectedSlotId ?: mergedSlots.firstOrNull()?.postId,
+                        legalVerificationByCaseId = newLegal,
+                        attractivenessByCaseId = newAttr,
+                        telemetry = current.telemetry.copy(
+                            ddakchalConnected = connected,
+                            lastSyncTime = if (connected) now else current.telemetry.lastSyncTime,
+                            apiLatencyMs = if (latestLatency > 0L) latestLatency else current.telemetry.apiLatencyMs,
+                            lastSyncEpochMs = if (connected) nowMs else current.telemetry.lastSyncEpochMs,
+                            lastHttpStatusCode = latestHttpCode,
+                            lastErrorDetail = if (connected) null else latestError,
+                            lastFeedCursorSince = nextCursor,
+                            triggerStatus = updatedTrigger,
+                            dailyQuotaUsed = mergedSlots.count { s ->
+                                s.status == PostStatus.PUBLISHED || s.status == PostStatus.QUEUED
+                            },
+                            isPinging = false
+                        )
+                    )
+                }
+
+                // Sync real /api/v1/blog/queue via Retrofit without clobbering server ping status
+                syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(
+                        telemetry = it.telemetry.copy(
+                            ddakchalConnected = false,
+                            isPinging = false,
+                            lastErrorDetail = e.localizedMessage ?: "서버 상태 확인 실패"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    fun syncRealBlogQueueWithRetrofit(limit: Int = 100, announceBanner: Boolean = true) {
+        val cfg = _uiState.value.config
+        viewModelScope.launch {
+            syncRealBlogQueueInternal(cfg = cfg, limit = limit, announceBanner = announceBanner)
+        }
+    }
+
+    private suspend fun syncRealBlogQueueInternal(
+        cfg: ServerAutomationConfig,
+        limit: Int,
+        announceBanner: Boolean
+    ) {
+        _uiState.update { it.copy(queueSyncState = QueueSyncState.Loading) }
+        val outcome = repository.syncBlogQueueWithRetrofit(cfg, limit)
+        if (outcome.isSuccess && outcome.data != null) {
+            val result = outcome.data
+            _uiState.update { current ->
+                val nextQueueState = if (result.items.isEmpty()) {
+                    QueueSyncState.Empty(
+                        message = "딱찰 서버 /api/v1/blog/queue 에 등록된 실데이터가 없습니다 (0건).",
+                        syncedAt = result.syncedAt,
+                        latencyMs = outcome.latencyMs,
+                        sourceEndpoint = result.sourceEndpoint
+                    )
+                } else {
+                    QueueSyncState.Loaded(
+                        items = result.items,
+                        analytics = result.analytics,
+                        syncedAt = result.syncedAt,
+                        latencyMs = outcome.latencyMs,
+                        sourceEndpoint = result.sourceEndpoint
+                    )
+                }
+                val riskReport = ChannelIndexRiskEngine.evaluate(
+                    config = current.config,
+                    slots = current.slots,
+                    publishLogs = current.publishLogs,
+                    visitorLogs = current.visitorLogs,
+                    queueSyncState = nextQueueState,
+                    naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                    alreadyPausedByRisk = current.autoPublishPausedByRisk,
+                    nowText = currentTimestamp()
+                )
+                current.copy(
+                    queueSyncState = nextQueueState,
+                    queueAnalytics = result.analytics,
+                    lowQualityRiskReport = riskReport,
+                    autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                    autoPublishPauseReason = riskReport.pauseReason,
+                    statusMessage = if (announceBanner) {
+                        if (result.items.isEmpty()) {
+                            "Retrofit /api/v1/blog/queue 조회 완료: 실데이터 0건"
+                        } else {
+                            "Retrofit /api/v1/blog/queue 실데이터 ${result.items.size}건 반영 (${outcome.latencyMs}ms)"
+                        }
+                    } else current.statusMessage
+                )
+            }
+        } else {
+            val tokenMissing = cfg.crawlerSyncToken.isBlank() || outcome.httpStatusCode in listOf(401, 403)
+            val errMsg = outcome.errorMessage ?: "Retrofit /api/v1/blog/queue 조회 실패"
+            _uiState.update { current ->
+                current.copy(
+                    queueSyncState = QueueSyncState.Error(
+                        httpStatusCode = outcome.httpStatusCode,
+                        message = errMsg,
+                        tokenMissing = tokenMissing
+                    ),
+                    queueAnalytics = QueueAnalyticsSummary(
+                        totalSlots = 0,
+                        publishedCount = 0,
+                        queuedCount = 0,
+                        failedOrHandoffCount = 0,
+                        draftCount = 0,
+                        successRatePct = 0,
+                        failureRatePct = 0,
+                        dailySeries = emptyList(),
+                        channelStats = emptyList()
+                    ),
+                    errorMessage = if (announceBanner) errMsg else current.errorMessage
+                )
+            }
+        }
+    }
+
+    fun triggerCrawlAndSyncPipeline() {
+        val cfg = _uiState.value.config
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    statusMessage = null,
+                    errorMessage = null,
+                    telemetry = it.telemetry.copy(isPinging = true)
+                )
+            }
+            try {
+                val outcome = repository.runCrawlAndSyncWithTelemetry(cfg, limit = cfg.dailyPostLimit.coerceAtLeast(5))
+                val triggerOutcome = repository.fetchTriggerStatusWithTelemetry(cfg)
+                val now = currentTimestamp()
+                val nowMs = System.currentTimeMillis()
+                if (outcome.isSuccess) {
+                    val fetched = outcome.data.orEmpty()
+                    _uiState.update { current ->
+                        val nextSlots = if (fetched.isNotEmpty()) {
+                            fetched + current.slots.filter { old ->
+                                fetched.none { inc -> inc.auctionCase.caseId == old.auctionCase.caseId }
+                            }
+                        } else current.slots
+                        val updatedTrigger = triggerOutcome.data ?: current.telemetry.triggerStatus
+                        current.copy(
+                            isBusy = false,
+                            slots = nextSlots,
+                            selectedSlotId = nextSlots.firstOrNull()?.postId,
+                            telemetry = current.telemetry.copy(
+                                ddakchalConnected = true,
+                                lastSyncTime = now,
+                                apiLatencyMs = outcome.latencyMs,
+                                lastSyncEpochMs = nowMs,
+                                lastHttpStatusCode = outcome.httpStatusCode,
+                                lastErrorDetail = null,
+                                lastFeedCursorSince = outcome.nextCursorSince ?: current.telemetry.lastFeedCursorSince,
+                                triggerStatus = updatedTrigger,
+                                isPinging = false
+                            ),
+                            statusMessage = "딱찰 크롤링·트리거·신규 분석 피드 ${fetched.size}건 동기화 완료 (${outcome.latencyMs}ms)"
+                        )
+                    }
+                    syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
+                } else {
+                    _uiState.update { current ->
+                        current.copy(
+                            isBusy = false,
+                            telemetry = current.telemetry.copy(
+                                ddakchalConnected = false,
+                                apiLatencyMs = outcome.latencyMs.takeIf { it > 0L } ?: current.telemetry.apiLatencyMs,
+                                lastHttpStatusCode = outcome.httpStatusCode,
+                                lastErrorDetail = outcome.errorMessage,
+                                isPinging = false
+                            ),
+                            errorMessage = outcome.errorMessage ?: "크롤링+동기화 실행 실패"
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            }
+        }
+    }
+
     fun triggerDaily5Generation() {
         val cfg = _uiState.value.config
         viewModelScope.launch {
@@ -352,16 +845,23 @@ class StudioViewModel(
                             telemetry = it.telemetry.copy(
                                 ddakchalConnected = true,
                                 lastSyncTime = now,
+                                lastSyncEpochMs = System.currentTimeMillis(),
+                                lastHttpStatusCode = 200,
+                                lastErrorDetail = null,
                                 dailyQuotaUsed = fetchedSlots.count { s -> s.status == PostStatus.PUBLISHED || s.status == PostStatus.QUEUED }
                             ),
                             statusMessage = "딱찰 실서버 일일 ${fetchedSlots.size}건 생성 및 3채널 QA 검수 완료"
                         )
                     }
+                    syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
                 }.onFailure { err ->
                     _uiState.update {
                         it.copy(
                             isBusy = false,
-                            telemetry = it.telemetry.copy(ddakchalConnected = false),
+                            telemetry = it.telemetry.copy(
+                                ddakchalConnected = false,
+                                lastErrorDetail = err.message
+                            ),
                             errorMessage = "${err.message} · 현재 오프라인 스펙 5슬롯 모드로 검수 가능합니다."
                         )
                     }
@@ -375,25 +875,50 @@ class StudioViewModel(
     fun syncSyndicationPackOnly() {
         val cfg = _uiState.value.config
         viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            _uiState.update {
+                it.copy(
+                    isBusy = true,
+                    statusMessage = null,
+                    errorMessage = null,
+                    telemetry = it.telemetry.copy(isPinging = true)
+                )
+            }
             try {
-                val res = repository.syncSyndicationPack(cfg)
+                val outcome = repository.syncSyndicationPackWithTelemetry(cfg, limit = cfg.dailyPostLimit.coerceAtLeast(5))
                 val now = currentTimestamp()
-                res.onSuccess { fetchedSlots ->
+                if (outcome.isSuccess && outcome.data != null) {
+                    val fetchedSlots = outcome.data
                     _uiState.update {
                         it.copy(
                             isBusy = false,
                             slots = fetchedSlots,
                             selectedSlotId = fetchedSlots.firstOrNull()?.postId,
-                            telemetry = it.telemetry.copy(ddakchalConnected = true, lastSyncTime = now),
-                            statusMessage = "신디케이션 팩 ${fetchedSlots.size}건 동기화 및 유사도·팩트체크 완료"
+                            telemetry = it.telemetry.copy(
+                                ddakchalConnected = true,
+                                lastSyncTime = now,
+                                apiLatencyMs = outcome.latencyMs,
+                                lastSyncEpochMs = System.currentTimeMillis(),
+                                lastHttpStatusCode = outcome.httpStatusCode,
+                                lastErrorDetail = null,
+                                lastFeedCursorSince = outcome.nextCursorSince ?: it.telemetry.lastFeedCursorSince,
+                                isPinging = false
+                            ),
+                            statusMessage = "신디케이션 팩 ${fetchedSlots.size}건 동기화 완료 (${outcome.latencyMs}ms)"
                         )
                     }
-                }.onFailure { err ->
+                    syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
+                } else {
                     _uiState.update {
                         it.copy(
                             isBusy = false,
-                            errorMessage = err.message ?: "신디케이션 팩 동기화 실패"
+                            telemetry = it.telemetry.copy(
+                                ddakchalConnected = false,
+                                apiLatencyMs = outcome.latencyMs.takeIf { l -> l > 0L } ?: it.telemetry.apiLatencyMs,
+                                lastHttpStatusCode = outcome.httpStatusCode,
+                                lastErrorDetail = outcome.errorMessage,
+                                isPinging = false
+                            ),
+                            errorMessage = outcome.errorMessage ?: "신디케이션 팩 동기화 실패"
                         )
                     }
                 }
@@ -713,7 +1238,8 @@ class StudioViewModel(
                     _uiState.update {
                         it.copy(
                             aiEvalState = AiEvalUiState.Success(report),
-                            statusMessage = "${report.caseId} AI 30항목 채점 완료: ${report.totalScore}/100점 (${report.overallVerdict})"
+                            lastAiEngineUsed = report.modelName,
+                            statusMessage = "${report.caseId} AI 30항목 채점 완료 (${report.modelName}): ${report.totalScore}/100점 (${report.overallVerdict})"
                         )
                     }
                 }
@@ -1109,6 +1635,7 @@ class StudioViewModel(
     fun refreshVisitorTrafficTelemetry() {
         viewModelScope.launch {
             repository.refreshVisitorTelemetry()
+            evaluateLowQualityRiskAndPauseIfNeeded(announceBanner = false)
             _uiState.update { it.copy(statusMessage = "채널별 실시간 방문자·체류시간·DB/PRO 전환 로그를 갱신했습니다.") }
         }
     }
@@ -1304,10 +1831,24 @@ class StudioViewModel(
             }
 
             _uiState.update { current ->
+                val nextSlots = current.slots.map { if (it.postId == targetSlot.postId) defendedSlot else it }
+                val riskReport = ChannelIndexRiskEngine.evaluate(
+                    config = current.config,
+                    slots = nextSlots,
+                    publishLogs = current.publishLogs,
+                    visitorLogs = current.visitorLogs,
+                    queueSyncState = current.queueSyncState,
+                    naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                    alreadyPausedByRisk = current.autoPublishPausedByRisk,
+                    nowText = currentTimestamp()
+                )
                 current.copy(
                     isBusy = false,
-                    slots = current.slots.map { if (it.postId == targetSlot.postId) defendedSlot else it },
+                    slots = nextSlots,
                     legalVerificationByCaseId = current.legalVerificationByCaseId + (defendedSlot.auctionCase.caseId to legalReport),
+                    lowQualityRiskReport = riskReport,
+                    autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                    autoPublishPauseReason = riskReport.pauseReason,
                     qualityDefenseState = current.qualityDefenseState.copy(
                         lastAuditedCaseId = defendedSlot.auctionCase.caseId,
                         lastChannel = ChannelPlatform.NAVER,
@@ -1408,9 +1949,39 @@ class StudioViewModel(
     }
 
     fun updateConfig(newConfig: ServerAutomationConfig) {
+        _uiState.update { state ->
+            val nowText = currentTimestamp()
+            val audited = SecurityAuditEngine.auditSecurity(
+                config = newConfig,
+                slots = state.slots,
+                publishLogs = state.publishLogs,
+                naverReachable = state.naverProbeResult?.reachableOk,
+                tistoryReachable = state.tistoryProbeResult?.reachableOk,
+                nowText = nowText
+            )
+            val riskReport = ChannelIndexRiskEngine.evaluate(
+                config = newConfig,
+                slots = state.slots,
+                publishLogs = state.publishLogs,
+                visitorLogs = state.visitorLogs,
+                queueSyncState = state.queueSyncState,
+                naverKeywordReport = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                alreadyPausedByRisk = state.autoPublishPausedByRisk,
+                nowText = nowText
+            )
+            state.copy(
+                config = newConfig,
+                securityDashboard = audited,
+                lowQualityRiskReport = riskReport,
+                autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                autoPublishPauseReason = riskReport.pauseReason,
+                statusMessage = "서버 및 저품질 방어 설정(.env 변수) 저장 완료"
+            )
+        }
         viewModelScope.launch {
-            repository.saveConfig(newConfig)
-            _uiState.update { it.copy(config = newConfig, statusMessage = "서버 및 저품질 방어 설정(.env 변수) 저장 완료") }
+            configSaveMutex.withLock {
+                repository.saveConfig(_uiState.value.config)
+            }
         }
     }
 
@@ -1686,10 +2257,24 @@ class StudioViewModel(
         viewModelScope.launch {
             repository.saveConfig(updatedCfg)
             _uiState.update {
+                val mergedLogs = listOf(log) + it.publishLogs
+                val riskReport = ChannelIndexRiskEngine.evaluate(
+                    config = updatedCfg,
+                    slots = it.slots,
+                    publishLogs = mergedLogs,
+                    visitorLogs = it.visitorLogs,
+                    queueSyncState = it.queueSyncState,
+                    naverKeywordReport = (it.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                    alreadyPausedByRisk = it.autoPublishPausedByRisk,
+                    nowText = now
+                )
                 it.copy(
                     config = updatedCfg,
                     activeHandoffAlert = "${platform.displayName} 보안문자/2단계 인증 감지 → 자동 발행 즉시 중단(handOff) · 1회 수동 세션 갱신이 필요합니다.",
-                    publishLogs = listOf(log) + it.publishLogs
+                    publishLogs = mergedLogs,
+                    lowQualityRiskReport = riskReport,
+                    autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                    autoPublishPauseReason = riskReport.pauseReason
                 )
             }
         }
@@ -1697,17 +2282,118 @@ class StudioViewModel(
 
     fun resolveSessionHandoff() {
         val updatedCfg = _uiState.value.config.copy(
-            naverSessionStatus = "유효 (storage_state 세션 정상)",
-            tistorySessionStatus = "유효 (storage_state 세션 정상)"
+            naverSessionStatus = "세션 복구 요청됨 (미검증 · 실제 발행/프로브 필요)",
+            tistorySessionStatus = "세션 복구 요청됨 (미검증 · 실제 발행/프로브 필요)"
         )
         viewModelScope.launch {
             repository.saveConfig(updatedCfg)
             _uiState.update {
+                val riskReport = ChannelIndexRiskEngine.evaluate(
+                    config = updatedCfg,
+                    slots = it.slots,
+                    publishLogs = it.publishLogs,
+                    visitorLogs = it.visitorLogs,
+                    queueSyncState = it.queueSyncState,
+                    naverKeywordReport = (it.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                    alreadyPausedByRisk = it.autoPublishPausedByRisk,
+                    nowText = currentTimestamp()
+                )
                 it.copy(
                     config = updatedCfg,
                     activeHandoffAlert = null,
-                    statusMessage = "Playwright 세션 복구 확인 완료 — 자동 발행 대기 상태 복귀"
+                    lowQualityRiskReport = riskReport,
+                    autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                    autoPublishPauseReason = riskReport.pauseReason,
+                    statusMessage = "Playwright 세션 핸드오프 상태 해제 완료 — 실제 연결·발행 점검이 필요합니다."
                 )
+            }
+        }
+    }
+
+    // ==================== Post-Publish Channel Index & Low-Quality Risk Guard ====================
+
+    fun evaluateLowQualityRiskAndPauseIfNeeded(announceBanner: Boolean = true) {
+        _uiState.update { state ->
+            val wasPaused = state.autoPublishPausedByRisk
+            val report = ChannelIndexRiskEngine.evaluate(
+                config = state.config,
+                slots = state.slots,
+                publishLogs = state.publishLogs,
+                visitorLogs = state.visitorLogs,
+                queueSyncState = state.queueSyncState,
+                naverKeywordReport = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                alreadyPausedByRisk = wasPaused,
+                nowText = currentTimestamp()
+            )
+            val newlyPaused = !wasPaused && report.autoPublishPaused
+            state.copy(
+                lowQualityRiskReport = report,
+                autoPublishPausedByRisk = report.autoPublishPaused,
+                autoPublishPauseReason = report.pauseReason,
+                errorMessage = if (newlyPaused) {
+                    report.pauseReason ?: "저품질 위험도 '위험 높음'으로 자동 발행이 일시 중지되었습니다."
+                } else state.errorMessage,
+                statusMessage = if (!newlyPaused && announceBanner) {
+                    "채널 지수 · 저품질 위험도 진단 완료: ${report.overallRisk.label} (${report.overallRiskScore}pt)"
+                } else state.statusMessage
+            )
+        }
+    }
+
+    fun resumeAutoPublishAfterRiskMitigation() {
+        val state = _uiState.value
+        val freshReport = ChannelIndexRiskEngine.evaluate(
+            config = state.config,
+            slots = state.slots,
+            publishLogs = state.publishLogs,
+            visitorLogs = state.visitorLogs,
+            queueSyncState = state.queueSyncState,
+            naverKeywordReport = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+            alreadyPausedByRisk = false,
+            nowText = currentTimestamp()
+        )
+        _uiState.update { cur ->
+            cur.copy(
+                lowQualityRiskReport = freshReport.copy(
+                    autoPublishPaused = false,
+                    pauseReason = null
+                ),
+                autoPublishPausedByRisk = false,
+                autoPublishPauseReason = null,
+                errorMessage = null,
+                statusMessage = "저품질 위험 조치 확인 후 자동 발행을 재개했습니다 (현재 위험도: ${freshReport.overallRisk.badgeText})."
+            )
+        }
+    }
+
+    fun toggleAutoPauseOnHighRisk(enabled: Boolean) {
+        _uiState.update { state ->
+            val updated = state.config.copy(autoPauseOnHighRisk = enabled)
+            val report = ChannelIndexRiskEngine.evaluate(
+                config = updated,
+                slots = state.slots,
+                publishLogs = state.publishLogs,
+                visitorLogs = state.visitorLogs,
+                queueSyncState = state.queueSyncState,
+                naverKeywordReport = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                alreadyPausedByRisk = if (enabled) state.autoPublishPausedByRisk else false,
+                nowText = currentTimestamp()
+            )
+            state.copy(
+                config = updated,
+                lowQualityRiskReport = report,
+                autoPublishPausedByRisk = report.autoPublishPaused,
+                autoPublishPauseReason = report.pauseReason,
+                statusMessage = if (enabled) {
+                    "저품질 위험도 '위험 높음' 시 자동 발행 자동 중지를 켰습니다."
+                } else {
+                    "저품질 위험도 자동 중지를 해제하고 수동 경고 모드로 전환했습니다."
+                }
+            )
+        }
+        viewModelScope.launch {
+            configSaveMutex.withLock {
+                repository.saveConfig(_uiState.value.config)
             }
         }
     }
@@ -1720,8 +2406,17 @@ class StudioViewModel(
     }
 
     fun generateWeeklyBatchAndSchedule(perDay: Int = _uiState.value.selectedWeeklyDailyCount) {
-        val safePerDay = perDay.coerceIn(3, 5)
         val state = _uiState.value
+        if (state.autoPublishPausedByRisk) {
+            _uiState.update {
+                it.copy(
+                    errorMessage = it.autoPublishPauseReason
+                        ?: "저품질 위험도 높음으로 자동 발행이 일시 중지되었습니다. 원인 조치 후 '자동발행 재개'를 눌러 주세요."
+                )
+            }
+            return
+        }
+        val safePerDay = perDay.coerceIn(3, 5)
         val updatedConfig = state.config.copy(
             dailyPostLimit = safePerDay.coerceAtLeast(state.config.dailyPostLimit),
             weeklyTargetPosts = safePerDay * 7
@@ -1820,23 +2515,38 @@ class StudioViewModel(
                 )
 
                 _uiState.update { current ->
+                    val updatedSlotsList = weeklySlots
+                    val mergedLogs = newPublishLogs + current.publishLogs
+                    val riskReport = ChannelIndexRiskEngine.evaluate(
+                        config = updatedConfig,
+                        slots = updatedSlotsList,
+                        publishLogs = mergedLogs,
+                        visitorLogs = current.visitorLogs,
+                        queueSyncState = current.queueSyncState,
+                        naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        alreadyPausedByRisk = current.autoPublishPausedByRisk,
+                        nowText = now
+                    )
                     current.copy(
                         isBusy = false,
                         config = updatedConfig,
-                        slots = weeklySlots,
+                        slots = updatedSlotsList,
                         selectedSlotId = weeklySlots.firstOrNull()?.postId,
                         activeRegistryInfographic = weeklySlots.firstOrNull()?.let {
                             RegistryInfographicEngine.buildTemplate(it.auctionCase, current.selectedRegistryTemplateType)
                         },
                         activeCourtArchive = weeklySlots.firstOrNull()?.let {
-                            CourtEvidenceRecorder.recordFullArchive(it.auctionCase)
+                            CourtEvidenceRecorder.recordFullArchive(it.auctionCase, it.courtPhotoUrls, it.visitRecords)
                         },
                         warehouseArticles = snapshot?.articles ?: (newWarehouseArticles + current.warehouseArticles),
                         writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
-                        publishLogs = newPublishLogs + current.publishLogs,
+                        publishLogs = mergedLogs,
                         legalVerificationByCaseId = newLegalMap,
                         attractivenessByCaseId = newAttrMap,
                         weeklyBatchSummary = weeklySummary,
+                        lowQualityRiskReport = riskReport,
+                        autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                        autoPublishPauseReason = riskReport.pauseReason,
                         telemetry = current.telemetry.copy(
                             ddakchalConnected = ddakchalLinked,
                             cloudflareD1Connected = d1Synced > 0 || current.telemetry.cloudflareD1Connected,
@@ -1862,6 +2572,15 @@ class StudioViewModel(
 
     fun createHighScoreAndAutoRegister(propertyType: PropertyType? = null) {
         val state = _uiState.value
+        if (state.autoPublishPausedByRisk) {
+            _uiState.update {
+                it.copy(
+                    errorMessage = it.autoPublishPauseReason
+                        ?: "저품질 위험도 높음으로 자동 발행이 일시 중지되었습니다. 원인 조치 후 '자동발행 재개'를 눌러 주세요."
+                )
+            }
+            return
+        }
         val cfg = state.config
         val funnelCfg = state.proFunnel
         val nextIndex = state.warehouseArticles.size + state.slots.size + 1
@@ -1911,7 +2630,22 @@ class StudioViewModel(
             _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
             try {
                 val corpus = repository.getRecent7DayCorpus()
-                val variants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, nextIndex, cfg, proFunnel = funnelCfg)
+                val baseVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, nextIndex, cfg, proFunnel = funnelCfg)
+                val activeTemplatesForType = state.postTemplates.filter {
+                    it.propertyType == chosenType && it.isActiveForGeneration && !it.isPreset
+                }
+                val variants = if (activeTemplatesForType.isNotEmpty()) {
+                    baseVariants.mapValues { (platform, variant) ->
+                        val matchedTemplate = activeTemplatesForType.firstOrNull { it.targetChannel == platform }
+                        if (matchedTemplate != null) {
+                            BlogPostTemplateEngine.applyTemplateToVariant(variant, matchedTemplate, auction, cfg, funnelCfg)
+                        } else {
+                            variant
+                        }
+                    }
+                } else {
+                    baseVariants
+                }
                 val scheduled = repository.computeStaggeredSchedule(todayIso, nextIndex, cfg)
                 val draft = GeneratedPostSlot(
                     postId = "post-$dedupKey",
@@ -1943,6 +2677,15 @@ class StudioViewModel(
 
     fun autoFixAndRegisterSlot(postId: String) {
         val state = _uiState.value
+        if (state.autoPublishPausedByRisk) {
+            _uiState.update {
+                it.copy(
+                    errorMessage = it.autoPublishPauseReason
+                        ?: "저품질 위험도 높음으로 자동 발행이 일시 중지되었습니다. 원인 조치 후 '자동발행 재개'를 눌러 주세요."
+                )
+            }
+            return
+        }
         val targetSlot = state.slots.firstOrNull { it.postId == postId }
             ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
             ?: return
@@ -1975,7 +2718,7 @@ class StudioViewModel(
         val state = _uiState.value
         val cfg = state.config
         val regTemplate = RegistryInfographicEngine.buildTemplate(slot.auctionCase, state.selectedRegistryTemplateType)
-        val courtArchive = CourtEvidenceRecorder.recordFullArchive(slot.auctionCase)
+        val courtArchive = CourtEvidenceRecorder.recordFullArchive(slot.auctionCase, slot.courtPhotoUrls, slot.visitRecords)
         val eval = Article30PointEvaluator.evaluate(slot, cfg, state.proFunnel, regTemplate)
         val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
         val attractiveness = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
@@ -2033,8 +2776,8 @@ class StudioViewModel(
                 postId = finalSlot.postId,
                 caseId = finalSlot.auctionCase.caseId,
                 platform = outcome.platform,
-                status = if (outcome.reachableOk) PostStatus.PUBLISHED else PostStatus.QUEUED,
-                publishedUrl = outcome.publishedPostUrl.ifBlank { outcome.targetUrl.ifBlank { null } },
+                status = if (outcome.reachableOk) PostStatus.PUBLISHED else PostStatus.FAILED,
+                publishedUrl = outcome.publishedPostUrl.ifBlank { null },
                 errorMessage = if (outcome.reachableOk) null else outcome.message,
                 handoffReason = null,
                 retryCount = 0,
@@ -2048,6 +2791,19 @@ class StudioViewModel(
             } else {
                 listOf(finalSlot) + current.slots
             }
+            val mergedLogs = pubLogs + current.publishLogs
+            val wasPaused = current.autoPublishPausedByRisk
+            val riskReport = ChannelIndexRiskEngine.evaluate(
+                config = current.config,
+                slots = replacedOrPrependedSlots,
+                publishLogs = mergedLogs,
+                visitorLogs = current.visitorLogs,
+                queueSyncState = current.queueSyncState,
+                naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                alreadyPausedByRisk = wasPaused,
+                nowText = now
+            )
+            val newlyPaused = !wasPaused && riskReport.autoPublishPaused
             current.copy(
                 isBusy = false,
                 slots = replacedOrPrependedSlots,
@@ -2056,12 +2812,43 @@ class StudioViewModel(
                 activeCourtArchive = courtArchive,
                 warehouseArticles = snapshot?.articles ?: current.warehouseArticles,
                 writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
-                publishLogs = pubLogs + current.publishLogs,
+                publishLogs = mergedLogs,
                 publishVerificationReport = report,
+                naverPublishStatuses = buildNaverPublishStatuses(replacedOrPrependedSlots, mergedLogs, current.config),
                 legalVerificationByCaseId = current.legalVerificationByCaseId + (finalSlot.auctionCase.caseId to legal),
                 attractivenessByCaseId = current.attractivenessByCaseId + (finalSlot.auctionCase.caseId to attractiveness),
+                lowQualityRiskReport = riskReport,
+                autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                autoPublishPauseReason = riskReport.pauseReason,
+                errorMessage = if (newlyPaused) riskReport.pauseReason else current.errorMessage,
                 statusMessage = "${finalSlot.auctionCase.caseId} (${score}점): ${report.overallSummary}"
             )
+        }
+
+        // Best-effort reverse-sync queue item status to DDAKCHAL backend if token is configured
+        val reverseSyncNote = if (cfg.crawlerSyncToken.isNotBlank() && cfg.ddakchalApiBase.isNotBlank()) {
+            val syncStatus = when (finalStatus) {
+                PostStatus.PUBLISHED -> "PUBLISHED"
+                PostStatus.FAILED, PostStatus.HANDOFF -> "FAILED"
+                else -> "DRAFT_SAVED"
+            }
+            val reverseOutcome = repository.reverseSyncQueueStatus(
+                config = cfg,
+                itemId = finalSlot.queueId,
+                status = syncStatus,
+                blogId = cfg.naverBlogId.ifBlank { null },
+                blogPostUrl = updatedPublishedUrls.values.firstOrNull(),
+                lastError = report.outcomes.firstOrNull { !it.reachableOk }?.message
+            )
+            reverseOutcome.data ?: reverseOutcome.errorMessage
+        } else null
+
+        if (!reverseSyncNote.isNullOrBlank()) {
+            _uiState.update { current ->
+                current.copy(
+                    statusMessage = "${finalSlot.auctionCase.caseId} (${score}점): ${report.overallSummary} · $reverseSyncNote"
+                )
+            }
         }
     }
 
@@ -2071,31 +2858,35 @@ class StudioViewModel(
         naverWorkerRelayEndpoint: String,
         tistoryBlogUrl: String,
         tistoryCategoryName: String,
-        ddakchalApiBase: String,
+        cloudflareSiteBaseInput: String,
         cloudflareBlogPath: String,
         publishNaver: Boolean,
         publishTistory: Boolean,
         publishCloudflare: Boolean
     ) {
-        val updated = _uiState.value.config.copy(
-            naverBlogId = naverBlogId.trim(),
-            naverCategoryName = naverCategoryName.trim().ifBlank { "부동산 경매 분석" },
-            naverWorkerRelayEndpoint = naverWorkerRelayEndpoint.trim(),
-            tistoryBlogUrl = tistoryBlogUrl.trim().removeSuffix("/"),
-            tistoryCategoryName = tistoryCategoryName.trim().ifBlank { "경매·권리·세무 리포트" },
-            ddakchalApiBase = ddakchalApiBase.trim().removeSuffix("/"),
-            cloudflareBlogPath = cloudflareBlogPath.trim().ifBlank { "/blog" },
-            publishTargetNaver = publishNaver,
-            publishTargetTistory = publishTistory,
-            publishTargetCloudflare = publishCloudflare
-        )
+        val cleanSiteBase = cloudflareSiteBaseInput.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
+        _uiState.update { state ->
+            val updated = state.config.copy(
+                naverBlogId = naverBlogId.trim(),
+                naverCategoryName = naverCategoryName.trim().ifBlank { "부동산 경매 분석" },
+                naverWorkerRelayEndpoint = naverWorkerRelayEndpoint.trim(),
+                tistoryBlogUrl = tistoryBlogUrl.trim().removeSuffix("/"),
+                tistoryCategoryName = tistoryCategoryName.trim().ifBlank { "경매·권리·세무 리포트" },
+                cloudflareSiteBase = cleanSiteBase,
+                cloudflareBlogPath = cloudflareBlogPath.trim().ifBlank { "/blog" },
+                publishTargetNaver = publishNaver,
+                publishTargetTistory = publishTistory,
+                publishTargetCloudflare = publishCloudflare
+            )
+            state.copy(
+                config = updated,
+                naverWriteGuides = directPublishClient.buildAlternateNaverWriteGuides(updated, state.slots.firstOrNull()),
+                statusMessage = "3채널 등록처(네이버·티스토리·${cleanSiteBase}) 저장 완료"
+            )
+        }
         viewModelScope.launch {
-            repository.saveConfig(updated)
-            _uiState.update {
-                it.copy(
-                    config = updated,
-                    statusMessage = "3채널 등록처(네이버·티스토리·자체웹) 저장 완료"
-                )
+            configSaveMutex.withLock {
+                repository.saveConfig(_uiState.value.config)
             }
         }
     }
@@ -2156,14 +2947,46 @@ class StudioViewModel(
                         repository.recordWarehouseRegistration(existingWh.warehouseId, listOf(ChannelPlatform.NAVER), wLog)
                     }
                 }
+                if (state.config.crawlerSyncToken.isNotBlank() && state.config.ddakchalApiBase.isNotBlank()) {
+                    repository.reverseSyncQueueStatus(
+                        config = state.config,
+                        itemId = updatedSlot.queueId,
+                        status = if (report.naverDirectPassed) "PUBLISHED" else "FAILED",
+                        blogId = state.config.naverBlogId.ifBlank { null },
+                        blogPostUrl = report.verifiedNaverPostUrl.ifBlank { null },
+                        lastError = if (report.naverDirectPassed) null else naverOutcome?.message
+                    )
+                }
                 _uiState.update { current ->
+                    val nextSlots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it }
+                    val nextLogs = listOf(newLog) + current.publishLogs
+                    val wasPaused = current.autoPublishPausedByRisk
+                    val riskReport = ChannelIndexRiskEngine.evaluate(
+                        config = current.config,
+                        slots = nextSlots,
+                        publishLogs = nextLogs,
+                        visitorLogs = current.visitorLogs,
+                        queueSyncState = current.queueSyncState,
+                        naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        alreadyPausedByRisk = wasPaused,
+                        nowText = now
+                    )
+                    val newlyPaused = !wasPaused && riskReport.autoPublishPaused
                     current.copy(
                         isBusy = false,
-                        slots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it },
-                        publishLogs = listOf(newLog) + current.publishLogs,
+                        slots = nextSlots,
+                        publishLogs = nextLogs,
                         publishVerificationReport = report,
-                        statusMessage = if (report.naverDirectPassed) report.overallSummary else null,
-                        errorMessage = if (!report.naverDirectPassed) report.overallSummary else null
+                        naverPublishStatuses = buildNaverPublishStatuses(nextSlots, nextLogs, current.config),
+                        lowQualityRiskReport = riskReport,
+                        autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                        autoPublishPauseReason = riskReport.pauseReason,
+                        statusMessage = if (report.naverDirectPassed && !newlyPaused) report.overallSummary else null,
+                        errorMessage = when {
+                            newlyPaused -> riskReport.pauseReason
+                            !report.naverDirectPassed -> report.overallSummary
+                            else -> null
+                        }
                     )
                 }
             } catch (e: CancellationException) {
@@ -2217,12 +3040,42 @@ class StudioViewModel(
                     publishedUrls = verifiedUrls,
                     status = if (report.outcomes.any { it.reachableOk }) PostStatus.PUBLISHED else fixed.slot.status
                 )
+                if (state.config.crawlerSyncToken.isNotBlank() && state.config.ddakchalApiBase.isNotBlank()) {
+                    val anyOk = report.outcomes.any { it.reachableOk }
+                    repository.reverseSyncQueueStatus(
+                        config = state.config,
+                        itemId = updatedSlot.queueId,
+                        status = if (anyOk) "PUBLISHED" else "FAILED",
+                        blogId = state.config.naverBlogId.ifBlank { null },
+                        blogPostUrl = verifiedUrls.values.firstOrNull(),
+                        lastError = if (anyOk) null else report.overallSummary
+                    )
+                }
                 _uiState.update { current ->
+                    val nextSlots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it }
+                    val nextLogs = newLogs + current.publishLogs
+                    val wasPaused = current.autoPublishPausedByRisk
+                    val riskReport = ChannelIndexRiskEngine.evaluate(
+                        config = current.config,
+                        slots = nextSlots,
+                        publishLogs = nextLogs,
+                        visitorLogs = current.visitorLogs,
+                        queueSyncState = current.queueSyncState,
+                        naverKeywordReport = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        alreadyPausedByRisk = wasPaused,
+                        nowText = now
+                    )
+                    val newlyPaused = !wasPaused && riskReport.autoPublishPaused
                     current.copy(
                         isBusy = false,
-                        slots = current.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it },
-                        publishLogs = newLogs + current.publishLogs,
+                        slots = nextSlots,
+                        publishLogs = nextLogs,
                         publishVerificationReport = report,
+                        naverPublishStatuses = buildNaverPublishStatuses(nextSlots, nextLogs, current.config),
+                        lowQualityRiskReport = riskReport,
+                        autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                        autoPublishPauseReason = riskReport.pauseReason,
+                        errorMessage = if (newlyPaused) riskReport.pauseReason else current.errorMessage,
                         statusMessage = report.overallSummary
                     )
                 }
@@ -2320,6 +3173,640 @@ class StudioViewModel(
             it.copy(
                 selectedLegalStudyCategory = category,
                 legalStudyQuery = query
+            )
+        }
+    }
+
+    fun refreshSecurityAudit() {
+        _uiState.update { state ->
+            val audited = SecurityAuditEngine.auditSecurity(
+                config = state.config,
+                slots = state.slots,
+                publishLogs = state.publishLogs,
+                naverReachable = state.naverProbeResult?.reachableOk,
+                tistoryReachable = state.tistoryProbeResult?.reachableOk,
+                nowText = currentTimestamp()
+            )
+            state.copy(
+                securityDashboard = audited,
+                statusMessage = "보안 감사 완료: ${audited.overallGrade.label} (${audited.overallScore}점 · 외부유출 ${audited.externalLeakCount}건)"
+            )
+        }
+    }
+
+    fun purgeLegacyPlaintextPasswords() {
+        val currentCfg = _uiState.value.config
+        val sanitized = currentCfg.copy(
+            naverPw = "",
+            tistoryPw = "",
+            naverSessionStatus = "비밀번호 미저장 · 워커 릴레이/세션 핸드오프 모드",
+            tistorySessionStatus = "비밀번호 미저장 · 카카오 2FA 세션 핸드오프 모드"
+        )
+        viewModelScope.launch {
+            repository.saveConfig(sanitized)
+            _uiState.update { state ->
+                val audited = SecurityAuditEngine.auditSecurity(
+                    config = sanitized,
+                    slots = state.slots,
+                    publishLogs = state.publishLogs,
+                    naverReachable = state.naverProbeResult?.reachableOk,
+                    tistoryReachable = state.tistoryProbeResult?.reachableOk,
+                    nowText = currentTimestamp()
+                )
+                state.copy(
+                    config = sanitized,
+                    securityDashboard = audited,
+                    statusMessage = "평문 비밀번호를 모두 소거하고 비번 미저장 보안 모드로 전환했습니다 (${audited.overallScore}점)"
+                )
+            }
+        }
+    }
+
+    fun probeNaverAndTistoryConnections() {
+        val cfg = _uiState.value.config
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val naverProbe = directPublishClient.probeNaverConnection(cfg)
+                val tistoryProbe = directPublishClient.probeTistoryConnection(cfg)
+                _uiState.update { state ->
+                    val audited = SecurityAuditEngine.auditSecurity(
+                        config = state.config,
+                        slots = state.slots,
+                        publishLogs = state.publishLogs,
+                        naverReachable = naverProbe.reachableOk,
+                        tistoryReachable = tistoryProbe.reachableOk,
+                        nowText = currentTimestamp()
+                    )
+                    state.copy(
+                        isBusy = false,
+                        naverProbeResult = naverProbe,
+                        tistoryProbeResult = tistoryProbe,
+                        securityDashboard = audited,
+                        statusMessage = "채널 주소·세션 점검 완료 — 네이버 HTTP ${naverProbe.httpStatusCode} / 티스토리 HTTP ${tistoryProbe.httpStatusCode}"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "채널 접속 점검 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun searchCaseWithAiAndOptimize(queryInput: String) {
+        val query = queryInput.trim().ifBlank {
+            _uiState.value.slots.firstOrNull()?.auctionCase?.caseId ?: "2024타경4501"
+        }
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    aiCaseSearchState = AiCaseSearchUiState.Searching(query),
+                    errorMessage = null,
+                    statusMessage = null
+                )
+            }
+            try {
+                val state = _uiState.value
+                // 1) Local queue / warehouse lookup first
+                var matchedSlot = state.slots.firstOrNull { slot ->
+                    slot.auctionCase.caseId.contains(query, ignoreCase = true) ||
+                        slot.auctionCase.address.contains(query, ignoreCase = true) ||
+                        slot.auctionCase.courtName.contains(query, ignoreCase = true) ||
+                        slot.auctionCase.propertyType.displayLabel.contains(query, ignoreCase = true)
+                } ?: state.warehouseArticles.firstOrNull { wh ->
+                    wh.slot.auctionCase.caseId.contains(query, ignoreCase = true) ||
+                        wh.slot.auctionCase.address.contains(query, ignoreCase = true)
+                }?.slot
+
+                // 2) Live DDAKCHAL lookup by caseId / dedupKey if configured
+                if (matchedSlot == null && state.config.ddakchalApiBase.isNotBlank()) {
+                    val assetOutcome = repository.fetchSingleAssetWithTelemetry(state.config, query, refresh = true)
+                    if (assetOutcome.isSuccess && assetOutcome.data != null) {
+                        matchedSlot = assetOutcome.data
+                    }
+                }
+
+                // 3) Fallback to top active queued case if user searched a broad topic keyword
+                if (matchedSlot == null) {
+                    matchedSlot = state.slots.firstOrNull()
+                        ?: DefaultSpecDataFactory.buildInitialDaily5Slots(state.config, state.proFunnel).first()
+                }
+
+                when (val outcome = aiCaseSearchAdvisor.optimizeCaseForAiSearch(matchedSlot, query, state.config)) {
+                    is AiCaseSearchOutcome.Success -> {
+                        val enrichedSlot = FirebaseAiCaseSearchService.applyGeoPackToSlot(
+                            slot = matchedSlot,
+                            pack = outcome.pack,
+                            config = state.config
+                        )
+                        val auditedQa = QaVerificationEngine.auditSlot(
+                            auctionCase = enrichedSlot.auctionCase,
+                            variants = enrichedSlot.variants,
+                            scheduledTimes = enrichedSlot.scheduledTimes,
+                            config = state.config,
+                            recent7DayCorpus = repository.getRecent7DayCorpus()
+                        )
+                        val finalSlot = enrichedSlot.copy(qaReport = auditedQa)
+                        _uiState.update { cur ->
+                            val replaced = if (cur.slots.any { it.postId == finalSlot.postId }) {
+                                cur.slots.map { if (it.postId == finalSlot.postId) finalSlot else it }
+                            } else {
+                                listOf(finalSlot) + cur.slots
+                            }
+                            cur.copy(
+                                slots = replaced,
+                                selectedSlotId = finalSlot.postId,
+                                aiCaseSearchState = AiCaseSearchUiState.Success(finalSlot, outcome.pack),
+                                lastAiEngineUsed = outcome.pack.modelUsed,
+                                topicSelectionBoard = TopicSelectionEngine.rankCandidates(
+                                    slots = replaced,
+                                    config = cur.config,
+                                    proFunnel = cur.proFunnel,
+                                    sortMode = cur.topicSelectionBoard.sortMode,
+                                    nowText = currentTimestamp()
+                                ),
+                                statusMessage = "${finalSlot.auctionCase.caseId} AI 검색 노출(GEO ${outcome.pack.estimatedGeoScore}점 · ${outcome.pack.modelUsed}) 최적화 완료"
+                            )
+                        }
+                    }
+                    is AiCaseSearchOutcome.Error -> {
+                        _uiState.update { cur ->
+                            cur.copy(
+                                aiCaseSearchState = AiCaseSearchUiState.Error(query, outcome.message),
+                                errorMessage = outcome.message
+                            )
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = "AI 사건검색 처리 실패: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update {
+                    it.copy(
+                        aiCaseSearchState = AiCaseSearchUiState.Error(query, msg),
+                        errorMessage = msg
+                    )
+                }
+            }
+        }
+    }
+
+    fun testRegisterAiSearchedCase() {
+        val searchState = _uiState.value.aiCaseSearchState
+        val targetSlotId = if (searchState is AiCaseSearchUiState.Success) {
+            searchState.matchedSlot.postId
+        } else {
+            _uiState.value.selectedSlotId ?: _uiState.value.slots.firstOrNull()?.postId
+        } ?: return
+        autoFixAndRegisterSlot(targetSlotId)
+    }
+
+    fun generateThreePureHtmlPosts(
+        threeCasesMode: Boolean = true,
+        preferredChannel: ChannelPlatform = _uiState.value.selectedChannel
+    ) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, errorMessage = null, statusMessage = null) }
+            try {
+                val state = _uiState.value
+                val recentCorpus = repository.getRecent7DayCorpus()
+                val sourceSlots = state.slots.ifEmpty {
+                    DefaultSpecDataFactory.buildInitialDaily5Slots(state.config, state.proFunnel)
+                }
+                val ensuredSlots = sourceSlots.take(3).map { slot ->
+                    val eval = Article30PointEvaluator.evaluate(
+                        slot = slot,
+                        config = state.config,
+                        proFunnel = state.proFunnel,
+                        recent7DayCorpus = recentCorpus
+                    )
+                    if (eval.totalScore >= 95) {
+                        slot
+                    } else {
+                        WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                            slot = slot,
+                            config = state.config,
+                            proFunnel = state.proFunnel,
+                            recent7DayCorpus = recentCorpus,
+                            maxIterations = 2
+                        ).slot
+                    }
+                }
+                val bundle = HtmlExportEngine.buildThreePureHtmlBatch(
+                    slots = ensuredSlots,
+                    threeCasesMode = threeCasesMode,
+                    preferredChannel = preferredChannel,
+                    config = state.config,
+                    nowText = currentTimestamp()
+                )
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        htmlBatchBundle = bundle,
+                        statusMessage = "순수 HTML ${bundle.items.size}건 생성 완료 (${bundle.modeLabel})"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "HTML 생성 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun dismissHtmlBatchBundle() {
+        _uiState.update { it.copy(htmlBatchBundle = null) }
+    }
+
+    /**
+     * .env (BuildConfig.NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)에 설정된
+     * 네이버 검색 API 키를 사용하여 특정 경매 키워드의 블로그 상위 노출 가능성을 진단한다.
+     */
+    fun diagnoseNaverKeywordExposure(rawKeyword: String = "") {
+        val state = _uiState.value
+        val activeSlot = state.slots.firstOrNull { it.postId == state.selectedSlotId }
+            ?: state.slots.firstOrNull()
+        val resolvedKeyword = rawKeyword.trim().ifBlank {
+            if (activeSlot != null) {
+                val region = activeSlot.auctionCase.address.split(" ")
+                    .filter { it.isNotBlank() }
+                    .take(2)
+                    .joinToString(" ")
+                "$region ${activeSlot.auctionCase.caseId} 경매".trim()
+            } else {
+                ""
+            }
+        }
+        if (resolvedKeyword.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Error(
+                        keyword = "",
+                        message = "진단할 경매 키워드를 입력해 주세요."
+                    ),
+                    errorMessage = "진단할 경매 키워드를 입력해 주세요."
+                )
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Loading(resolvedKeyword),
+                    errorMessage = null,
+                    statusMessage = null
+                )
+            }
+            try {
+                when (val outcome = naverApiClient.diagnoseKeywordBlogExposure(keyword = resolvedKeyword)) {
+                    is NaverRealEstateApiClient.NaverKeywordExposureOutcome.Success -> {
+                        val report = outcome.report
+                        _uiState.update { cur ->
+                            val wasPaused = cur.autoPublishPausedByRisk
+                            val riskReport = ChannelIndexRiskEngine.evaluate(
+                                config = cur.config,
+                                slots = cur.slots,
+                                publishLogs = cur.publishLogs,
+                                visitorLogs = cur.visitorLogs,
+                                queueSyncState = cur.queueSyncState,
+                                naverKeywordReport = report,
+                                alreadyPausedByRisk = wasPaused,
+                                nowText = currentTimestamp()
+                            )
+                            val newlyPaused = !wasPaused && riskReport.autoPublishPaused
+                            cur.copy(
+                                naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Success(report),
+                                lowQualityRiskReport = riskReport,
+                                autoPublishPausedByRisk = riskReport.autoPublishPaused,
+                                autoPublishPauseReason = riskReport.pauseReason,
+                                errorMessage = if (newlyPaused) riskReport.pauseReason else cur.errorMessage,
+                                statusMessage = "'${report.keyword}' 네이버 노출 진단: ${report.exposureScore}점 (${report.grade.label})"
+                            )
+                        }
+                    }
+                    is NaverRealEstateApiClient.NaverKeywordExposureOutcome.Failure -> {
+                        _uiState.update { cur ->
+                            cur.copy(
+                                naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Error(
+                                    keyword = resolvedKeyword,
+                                    message = outcome.message,
+                                    apiKeyMissing = outcome.apiKeyMissing
+                                ),
+                                errorMessage = outcome.message
+                            )
+                        }
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val msg = "네이버 노출 진단 오류: ${e.localizedMessage ?: "네트워크 상태 확인 필요"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Error(
+                            keyword = resolvedKeyword,
+                            message = msg
+                        ),
+                        errorMessage = msg
+                    )
+                }
+            }
+        }
+    }
+
+    fun clearNaverKeywordDiagnosis() {
+        _uiState.update { it.copy(naverKeywordDiagnosis = NaverKeywordDiagnosisUiState.Idle) }
+    }
+
+    // ==================== 4-Pillar Topic Selection Engine ====================
+
+    fun evaluateAndRankTopics(sortMode: TopicSortCriteria = _uiState.value.topicSelectionBoard.sortMode) {
+        val state = _uiState.value
+        val diagnosis = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report
+        val board = TopicSelectionEngine.rankCandidates(
+            slots = state.slots,
+            config = state.config,
+            proFunnel = state.proFunnel,
+            sortMode = sortMode,
+            naverKeywordDiagnosis = diagnosis,
+            nowText = currentTimestamp()
+        )
+        _uiState.update { cur ->
+            cur.copy(
+                topicSelectionBoard = board,
+                statusMessage = "4대 기준(${sortMode.label}) 글감 ${board.candidates.size}건 선정 분석 완료"
+            )
+        }
+    }
+
+    fun applyTopSelectedTopicsToQueue(count: Int = 3) {
+        val state = _uiState.value
+        val rankedIds = state.topicSelectionBoard.candidates.take(count).map { it.postId }
+        if (rankedIds.isEmpty()) return
+        val slotById = state.slots.associateBy { it.postId }
+        val topSlots = rankedIds.mapNotNull { slotById[it] }
+        val restSlots = state.slots.filterNot { it.postId in rankedIds }
+        val reordered = (topSlots + restSlots).mapIndexed { index, slot ->
+            slot.copy(slotIndex = index + 1)
+        }
+        val diagnosis = (state.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report
+        val refreshedBoard = TopicSelectionEngine.rankCandidates(
+            slots = reordered,
+            config = state.config,
+            proFunnel = state.proFunnel,
+            sortMode = state.topicSelectionBoard.sortMode,
+            naverKeywordDiagnosis = diagnosis,
+            nowText = currentTimestamp()
+        )
+        _uiState.update { cur ->
+            cur.copy(
+                slots = reordered,
+                selectedSlotId = reordered.firstOrNull()?.postId ?: cur.selectedSlotId,
+                topicSelectionBoard = refreshedBoard,
+                statusMessage = "선정 글감 상위 ${topSlots.size}건을 오늘 우선 발행 슬롯으로 승격했습니다."
+            )
+        }
+    }
+
+    fun selectAndAutoRegisterTopic(postId: String) {
+        selectSlot(postId)
+        autoFixAndRegisterSlot(postId)
+    }
+
+    // ==================== Comprehensive DDAKCHAL Server Audit ====================
+
+    fun runPerfectDdakchalServerDiagnostic() {
+        val state = _uiState.value
+        val sampleCaseId = state.slots.firstOrNull()?.auctionCase?.caseId
+            ?: state.slots.firstOrNull()?.auctionCase?.dedupKey
+            ?: "2025타경6297"
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, errorMessage = null, statusMessage = null) }
+            try {
+                val report = repository.runComprehensiveDdakchalDiagnostic(state.config, sampleCaseId)
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        ddakchalFullDiagnostic = report,
+                        telemetry = cur.telemetry.copy(
+                            ddakchalConnected = report.overallConnected,
+                            lastSyncTime = report.checkedAt,
+                            lastErrorDetail = if (report.overallConnected) null else report.recommendation
+                        ),
+                        statusMessage = "딱찰 서버 정밀 점검 완료: ${report.healthGradeLabel} (${report.overallScorePct}%)"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(isBusy = false, errorMessage = "딱찰 서버 정밀 점검 오류: ${e.localizedMessage}")
+                }
+            }
+        }
+    }
+
+    // ==================== Naver Publish Status Tracker & Write Modes ====================
+
+    fun refreshNaverPublishStatuses() {
+        val state = _uiState.value
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val currentList = buildNaverPublishStatuses(state.slots, state.publishLogs, state.config)
+                val verifiedList = currentList.map { rec ->
+                    if (rec.publishedUrl.startsWith("http")) {
+                        val (ok, code) = directPublishClient.verifyUrlReachable(rec.publishedUrl)
+                        rec.copy(
+                            isRegisteredOk = ok,
+                            httpStatusCode = code,
+                            statusLabel = if (ok) "네이버 실URL 도달(HTTP $code)" else "URL 확인 필요(HTTP $code)",
+                            detailNote = if (ok) "실시간 HTTP GET 검증 완료" else "로그인·비공개 또는 URL 확인 필요",
+                            updatedAt = currentTimestamp()
+                        )
+                    } else rec
+                }
+                val okCount = verifiedList.count { it.isRegisteredOk }
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        naverPublishStatuses = verifiedList,
+                        statusMessage = "네이버 글 등록 상태 점검 완료 (${okCount}/${verifiedList.size}건 실존 확인)"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "네이버 등록 상태 확인 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun updateNaverWriteMode(mode: NaverAutoWriteMode) {
+        _uiState.update { cur ->
+            val updated = cur.config.copy(naverWriteMode = mode)
+            cur.copy(
+                config = updated,
+                naverWriteGuides = directPublishClient.buildAlternateNaverWriteGuides(updated, cur.slots.firstOrNull()),
+                statusMessage = "네이버 글쓰기 자동화 방식을 '${mode.title}'(으)로 전환했습니다."
+            )
+        }
+        viewModelScope.launch {
+            configSaveMutex.withLock {
+                repository.saveConfig(_uiState.value.config)
+            }
+        }
+    }
+
+    // ==================== Quick Settings, Always-Logged-In & Google Gemini/Grok Routing ====================
+
+    fun saveQuickSettings(
+        cloudflareSiteBase: String,
+        cloudflareBlogPath: String,
+        naverKeepLoggedIn: Boolean,
+        tistoryKeepLoggedIn: Boolean,
+        tistoryAutoDirectPublish: Boolean,
+        grokFallbackEnabled: Boolean,
+        grokModelName: String
+    ) {
+        val cleanSite = cloudflareSiteBase.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
+        val cleanPath = cloudflareBlogPath.trim().let { if (it.startsWith("/")) it else "/$it" }.ifBlank { "/blog" }
+        _uiState.update { cur ->
+            val updated = cur.config.copy(
+                cloudflareSiteBase = cleanSite,
+                cloudflareBlogPath = cleanPath,
+                naverKeepLoggedIn = naverKeepLoggedIn,
+                tistoryKeepLoggedIn = tistoryKeepLoggedIn,
+                tistoryAutoDirectPublish = tistoryAutoDirectPublish,
+                grokFallbackEnabled = grokFallbackEnabled,
+                grokModelName = grokModelName.trim().ifBlank { "grok-3-mini" },
+                naverSessionStatus = if (naverKeepLoggedIn) "항상 로그인 유지 중 (비번 미저장 · 세션 핸드오프)" else "수동 로그인 모드",
+                tistorySessionStatus = when {
+                    tistoryKeepLoggedIn && tistoryAutoDirectPublish -> "항상 로그인 · 바로 등록 활성"
+                    tistoryKeepLoggedIn -> "항상 로그인 유지 중"
+                    else -> "수동 로그인 모드"
+                }
+            )
+            cur.copy(
+                config = updated,
+                statusMessage = "환경설정 저장 완료 ($cleanSite$cleanPath · 네이버·티스토리 상시 로그인/바로 등록 반영)"
+            )
+        }
+        viewModelScope.launch {
+            configSaveMutex.withLock {
+                repository.saveConfig(_uiState.value.config)
+            }
+        }
+    }
+
+    fun runAlwaysLoggedInHeartbeat() {
+        val cfg = _uiState.value.config
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val (nvProbe, tsProbe, cfProbe) = directPublishClient.probeAlwaysLoggedInHeartbeat(cfg)
+                val updatedCfg = cfg.copy(
+                    naverSessionStatus = if (cfg.naverKeepLoggedIn) {
+                        "항상 로그인 유지 중 · ${nvProbe.detailMessage}"
+                    } else nvProbe.detailMessage,
+                    tistorySessionStatus = if (cfg.tistoryKeepLoggedIn && cfg.tistoryAutoDirectPublish) {
+                        "항상 로그인 · 바로 등록 활성 · ${tsProbe.detailMessage}"
+                    } else tsProbe.detailMessage
+                )
+                repository.saveConfig(updatedCfg)
+                _uiState.update { cur ->
+                    val audited = SecurityAuditEngine.auditSecurity(
+                        config = updatedCfg,
+                        slots = cur.slots,
+                        publishLogs = cur.publishLogs,
+                        naverReachable = nvProbe.reachableOk,
+                        tistoryReachable = tsProbe.reachableOk,
+                        nowText = currentTimestamp()
+                    )
+                    cur.copy(
+                        isBusy = false,
+                        config = updatedCfg,
+                        naverProbeResult = nvProbe,
+                        tistoryProbeResult = tsProbe,
+                        securityDashboard = audited,
+                        statusMessage = "상시 연결 점검: 네이버 HTTP ${nvProbe.httpStatusCode} · 티스토리 HTTP ${tsProbe.httpStatusCode} · ${cfProbe.targetUrl} HTTP ${cfProbe.httpStatusCode}"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "채널 상시 연결 점검 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun syncGoogleAuthState(statusOverride: String? = null) {
+        val cfg = _uiState.value.config
+        val accountState = GoogleAccountAuthHelper.currentGoogleAccountState(
+            primaryGeminiFirst = cfg.aiPrimaryGeminiFirst,
+            grokFallbackEnabled = cfg.grokFallbackEnabled,
+            grokModelName = cfg.grokModelName,
+            statusOverride = statusOverride
+        )
+        _uiState.update { cur ->
+            cur.copy(
+                googleAccount = accountState,
+                lastAiEngineUsed = accountState.activePrimaryEngineLabel,
+                statusMessage = statusOverride ?: cur.statusMessage
+            )
+        }
+    }
+
+    fun signOutGoogle(context: Context) {
+        viewModelScope.launch {
+            GoogleAccountAuthHelper.signOutGoogle(context)
+            syncGoogleAuthState("Google 계정 로그아웃 완료 (Firebase App Check 기본 모드)")
+        }
+    }
+
+    private fun buildNaverPublishStatuses(
+        slots: List<GeneratedPostSlot>,
+        logs: List<PublishLogEntry>,
+        config: ServerAutomationConfig
+    ): List<NaverPublishStatusRecord> {
+        val naverLogsByPost = logs.filter { it.platform == ChannelPlatform.NAVER }.groupBy { it.postId }
+        val methodLabel = config.naverWriteMode.shortBadge
+        val relayConfigured = config.naverWorkerRelayEndpoint.isNotBlank()
+        return slots.take(8).map { slot ->
+            val latestLog = naverLogsByPost[slot.postId]?.firstOrNull()
+            val publishedUrl = slot.publishedUrls[ChannelPlatform.NAVER].orEmpty()
+                .ifBlank { latestLog?.publishedUrl.orEmpty() }
+            val hasVerifiedPostUrl = publishedUrl.isNotBlank() &&
+                latestLog?.status != PostStatus.FAILED &&
+                latestLog?.status != PostStatus.HANDOFF &&
+                (slot.status == PostStatus.PUBLISHED || latestLog?.status == PostStatus.PUBLISHED)
+            val statusText = when {
+                latestLog?.status == PostStatus.HANDOFF -> "세션 중단 (캡차 확인)"
+                latestLog?.status == PostStatus.FAILED -> "등록 실패 (${latestLog.errorMessage ?: "재시도 필요"})"
+                hasVerifiedPostUrl -> "등록 완료 · 실URL 확인"
+                !relayConfigured -> "워커 미연동 · 발행 대기"
+                slot.status == PostStatus.QUEUED -> "예약 대기 ($methodLabel)"
+                else -> "미발행 · 대기 중"
+            }
+            val title = slot.variants[ChannelPlatform.NAVER]?.title ?: slot.auctionCase.address
+            NaverPublishStatusRecord(
+                postId = slot.postId,
+                caseId = slot.auctionCase.caseId,
+                title = title,
+                statusLabel = statusText,
+                isRegisteredOk = hasVerifiedPostUrl,
+                methodUsed = methodLabel,
+                httpStatusCode = if (hasVerifiedPostUrl) 200 else 0,
+                publishedUrl = publishedUrl,
+                detailNote = latestLog?.errorMessage ?: when {
+                    hasVerifiedPostUrl -> "실제 발행 글 URL 확인됨"
+                    !relayConfigured -> "NAVER_WORKER_RELAY_ENDPOINT 미연동 · 수동 URL 입력 또는 릴레이 연동 필요"
+                    else -> "발행 이력 대기 중"
+                },
+                updatedAt = latestLog?.publishedAt ?: slot.publishDate
             )
         }
     }

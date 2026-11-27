@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.model.NaverAutoWriteMode
 import com.example.model.PropertyType
 import com.example.model.ServerAutomationConfig
 import com.squareup.moshi.Moshi
@@ -31,6 +32,7 @@ class ServerConfigStore(private val dataStore: DataStore<Preferences>) {
 
     private object Keys {
         val DDAKCHAL_API_BASE = stringPreferencesKey("ddakchal_api_base")
+        val CLOUDFLARE_SITE_BASE = stringPreferencesKey("cloudflare_site_base")
         val CRAWLER_SYNC_TOKEN = stringPreferencesKey("crawler_sync_token")
         val CF_ACCOUNT_ID = stringPreferencesKey("cf_account_id")
         val CF_API_TOKEN = stringPreferencesKey("cf_api_token")
@@ -59,13 +61,26 @@ class ServerConfigStore(private val dataStore: DataStore<Preferences>) {
         val LLM_API_KEY = stringPreferencesKey("llm_api_key")
         val NAVER_SESSION_STATUS = stringPreferencesKey("naver_session_status")
         val TISTORY_SESSION_STATUS = stringPreferencesKey("tistory_session_status")
+        val NAVER_KEEP_LOGGED_IN = booleanPreferencesKey("naver_keep_logged_in")
+        val TISTORY_KEEP_LOGGED_IN = booleanPreferencesKey("tistory_keep_logged_in")
+        val TISTORY_AUTO_DIRECT_PUBLISH = booleanPreferencesKey("tistory_auto_direct_publish")
+        val NAVER_WRITE_MODE = stringPreferencesKey("naver_write_mode")
+        val AI_PRIMARY_GEMINI_FIRST = booleanPreferencesKey("ai_primary_gemini_first")
+        val GROK_FALLBACK_ENABLED = booleanPreferencesKey("grok_fallback_enabled")
+        val GROK_MODEL_NAME = stringPreferencesKey("grok_model_name")
+        val AUTO_PAUSE_ON_HIGH_RISK = booleanPreferencesKey("auto_pause_on_high_risk")
         val RECENT_7D_CORPUS_JSON = stringPreferencesKey("recent_7d_corpus_json")
         fun yamlKey(type: PropertyType) = stringPreferencesKey("yaml_${type.code}")
     }
 
     val configFlow: Flow<ServerAutomationConfig> = dataStore.data.map { prefs ->
+        val rawWriteMode = prefs[Keys.NAVER_WRITE_MODE].orEmpty()
+        val parsedWriteMode = NaverAutoWriteMode.entries.firstOrNull { it.name == rawWriteMode }
+            ?: NaverAutoWriteMode.WORKER_RELAY
         ServerAutomationConfig(
             ddakchalApiBase = prefs[Keys.DDAKCHAL_API_BASE] ?: "https://ddakchal.pages.dev",
+            cloudflareSiteBase = prefs[Keys.CLOUDFLARE_SITE_BASE]?.ifBlank { "https://aution.codeb.app" }
+                ?: "https://aution.codeb.app",
             crawlerSyncToken = prefs[Keys.CRAWLER_SYNC_TOKEN] ?: "",
             cfAccountId = prefs[Keys.CF_ACCOUNT_ID] ?: "",
             cfApiToken = prefs[Keys.CF_API_TOKEN] ?: "",
@@ -92,14 +107,27 @@ class ServerConfigStore(private val dataStore: DataStore<Preferences>) {
             cloudflareBlogPath = prefs[Keys.CLOUDFLARE_BLOG_PATH] ?: "/blog",
             llmApiEndpoint = prefs[Keys.LLM_API_ENDPOINT] ?: "",
             llmApiKey = prefs[Keys.LLM_API_KEY] ?: "",
-            naverSessionStatus = prefs[Keys.NAVER_SESSION_STATUS] ?: "유효 (storage_state 로드 대기)",
-            tistorySessionStatus = prefs[Keys.TISTORY_SESSION_STATUS] ?: "유효 (storage_state 로드 대기)"
+            naverSessionStatus = prefs[Keys.NAVER_SESSION_STATUS]?.ifBlank {
+                "세션 미확인 (연결 점검 또는 워커 릴레이 필요)"
+            } ?: "세션 미확인 (연결 점검 또는 워커 릴레이 필요)",
+            tistorySessionStatus = prefs[Keys.TISTORY_SESSION_STATUS]?.ifBlank {
+                "미연동 (릴레이·URL 연결 점검 대기)"
+            } ?: "미연동 (릴레이·URL 연결 점검 대기)",
+            naverKeepLoggedIn = prefs[Keys.NAVER_KEEP_LOGGED_IN] ?: true,
+            tistoryKeepLoggedIn = prefs[Keys.TISTORY_KEEP_LOGGED_IN] ?: true,
+            tistoryAutoDirectPublish = prefs[Keys.TISTORY_AUTO_DIRECT_PUBLISH] ?: true,
+            naverWriteMode = parsedWriteMode,
+            aiPrimaryGeminiFirst = prefs[Keys.AI_PRIMARY_GEMINI_FIRST] ?: true,
+            grokFallbackEnabled = prefs[Keys.GROK_FALLBACK_ENABLED] ?: true,
+            grokModelName = prefs[Keys.GROK_MODEL_NAME]?.ifBlank { "grok-3-mini" } ?: "grok-3-mini",
+            autoPauseOnHighRisk = prefs[Keys.AUTO_PAUSE_ON_HIGH_RISK] ?: true
         )
     }
 
     suspend fun saveConfig(config: ServerAutomationConfig) {
         dataStore.edit { prefs ->
-            prefs[Keys.DDAKCHAL_API_BASE] = config.ddakchalApiBase.trim().removeSuffix("/")
+            prefs[Keys.DDAKCHAL_API_BASE] = config.ddakchalApiBase.trim().removeSuffix("/").ifBlank { "https://ddakchal.pages.dev" }
+            prefs[Keys.CLOUDFLARE_SITE_BASE] = config.cloudflareSiteBase.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
             prefs[Keys.CRAWLER_SYNC_TOKEN] = config.crawlerSyncToken.trim()
             prefs[Keys.CF_ACCOUNT_ID] = config.cfAccountId.trim()
             prefs[Keys.CF_API_TOKEN] = config.cfApiToken.trim()
@@ -128,6 +156,14 @@ class ServerConfigStore(private val dataStore: DataStore<Preferences>) {
             prefs[Keys.LLM_API_KEY] = config.llmApiKey.trim()
             prefs[Keys.NAVER_SESSION_STATUS] = config.naverSessionStatus
             prefs[Keys.TISTORY_SESSION_STATUS] = config.tistorySessionStatus
+            prefs[Keys.NAVER_KEEP_LOGGED_IN] = config.naverKeepLoggedIn
+            prefs[Keys.TISTORY_KEEP_LOGGED_IN] = config.tistoryKeepLoggedIn
+            prefs[Keys.TISTORY_AUTO_DIRECT_PUBLISH] = config.tistoryAutoDirectPublish
+            prefs[Keys.NAVER_WRITE_MODE] = config.naverWriteMode.name
+            prefs[Keys.AI_PRIMARY_GEMINI_FIRST] = config.aiPrimaryGeminiFirst
+            prefs[Keys.GROK_FALLBACK_ENABLED] = config.grokFallbackEnabled
+            prefs[Keys.GROK_MODEL_NAME] = config.grokModelName.trim().ifBlank { "grok-3-mini" }
+            prefs[Keys.AUTO_PAUSE_ON_HIGH_RISK] = config.autoPauseOnHighRisk
         }
     }
 

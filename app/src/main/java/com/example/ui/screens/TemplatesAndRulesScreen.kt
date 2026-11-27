@@ -91,6 +91,7 @@ fun TemplatesAndRulesScreen(
     onResetSeoChecklist: () -> Unit,
     onSaveProFunnel: (ProFunnelConfig) -> Unit,
     onResetProFunnel: () -> Unit,
+    onCrawlAndSync: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -185,7 +186,12 @@ fun TemplatesAndRulesScreen(
                 },
                 onActivateTemplate = onActivatePostTemplate,
                 onDeleteTemplate = onDeletePostTemplate,
-                onResetDefaults = onResetPostTemplates
+                onResetDefaults = onResetPostTemplates,
+                onCrawlAndSync = onCrawlAndSync,
+                onOpenLowQualityGuide = { activeSubTab = "LOW_QUALITY_GUIDE" },
+                isBusy = uiState.isBusy,
+                ddakchalConnected = uiState.telemetry.ddakchalConnected,
+                apiLatencyMs = uiState.telemetry.apiLatencyMs
             )
         } else if (activeSubTab == "LOW_QUALITY_GUIDE") {
             lowQualityGuideAndChecklistItems(

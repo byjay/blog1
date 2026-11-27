@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircle
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Preview
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -83,7 +85,12 @@ fun LazyListScope.postTemplateManagerItems(
     onRequestDuplicate: (BlogPostTemplate) -> Unit,
     onActivateTemplate: (String) -> Unit,
     onDeleteTemplate: (String) -> Unit,
-    onResetDefaults: () -> Unit
+    onResetDefaults: () -> Unit,
+    onCrawlAndSync: () -> Unit = {},
+    onOpenLowQualityGuide: () -> Unit = {},
+    isBusy: Boolean = false,
+    ddakchalConnected: Boolean = false,
+    apiLatencyMs: Long? = null
 ) {
     item {
         StudioCard(borderColor = EmeraldPrimary.copy(alpha = 0.45f)) {
@@ -99,7 +106,7 @@ fun LazyListScope.postTemplateManagerItems(
                         color = TextPrimary
                     )
                     Text(
-                        text = "물건 유형·채널별 제목·본문·태그 양식을 직접 만들고 즉시 수정·적용합니다.",
+                        text = "물건 유형·채널별 SEO 태그와 경매 실측 필드를 자동 삽입해 최상단 노출 원고를 생성합니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
@@ -132,6 +139,42 @@ fun LazyListScope.postTemplateManagerItems(
                 Icon(Icons.Filled.AddCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text("새 물건별 게시글 템플릿 생성")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onCrawlAndSync,
+                    enabled = !isBusy,
+                    modifier = Modifier
+                        .weight(1.25f)
+                        .height(48.dp)
+                        .testTag("btn_templates_crawl_sync"),
+                    border = BorderStroke(1.dp, CloudflareSky.copy(alpha = 0.65f))
+                ) {
+                    Icon(Icons.Filled.Bolt, contentDescription = null, tint = CloudflareSky, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (ddakchalConnected) "딱찰 즉시 크롤링(${apiLatencyMs ?: 0}ms)" else "딱찰 크롤링·피드 동기화",
+                        color = CloudflareSky,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                OutlinedButton(
+                    onClick = onOpenLowQualityGuide,
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .height(48.dp)
+                        .testTag("btn_templates_low_quality_jump"),
+                    border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.55f))
+                ) {
+                    Icon(Icons.Filled.Shield, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("저품질 진단", color = MintSecondary, maxLines = 1)
+                }
             }
         }
     }
@@ -210,6 +253,15 @@ private fun BlogPostTemplateCard(
         template.bodyTemplate.count { !it.isWhitespace() }
     }
     val lengthOk = nonSpaceCount in 1100..2500
+    val hasRequiredTokens = remember(template.titleTemplate, template.bodyTemplate) {
+        val combined = "${template.titleTemplate}\n${template.bodyTemplate}"
+        listOf("{사건번호}", "{감정가}", "{최저가}", "{말소기준권리}").all { combined.contains(it) }
+    }
+    val hasExternalUrlForNaver = remember(template.bodyTemplate, template.targetChannel) {
+        template.targetChannel == ChannelPlatform.NAVER &&
+            (template.bodyTemplate.contains("http://") || template.bodyTemplate.contains("https://"))
+    }
+    val lowQualitySafe = hasRequiredTokens && !hasExternalUrlForNaver && nonSpaceCount >= 400
 
     StudioCard(
         borderColor = if (template.isActiveForGeneration) EmeraldPrimary.copy(alpha = 0.65f) else NavyBorder,
@@ -254,6 +306,11 @@ private fun BlogPostTemplateCard(
                 text = "본문 ${nonSpaceCount}자",
                 textColor = if (lengthOk) CloudflareSky else TistoryAmber,
                 backgroundColor = if (lengthOk) CloudflareContainer else AmberContainer
+            )
+            StatusChip(
+                text = if (lowQualitySafe) "최상단 SEO 안전" else if (hasExternalUrlForNaver) "외부URL 차단주의" else "팩트토큰 보완",
+                textColor = if (lowQualitySafe) MintSecondary else if (hasExternalUrlForNaver) CrimsonAlert else TistoryAmber,
+                backgroundColor = if (lowQualitySafe) EmeraldContainer else AmberContainer
             )
         }
 
@@ -518,13 +575,48 @@ fun PostTemplateEditorDialog(
                         .testTag("input_template_title")
                 )
 
-                Text("치환 변수 원터치 삽입 (본문에 추가)", style = MaterialTheme.typography.labelMedium, color = MintSecondary)
+                Text("치환 변수 · 최상단 SEO 블록 원터치 삽입", style = MaterialTheme.typography.labelMedium, color = MintSecondary)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    AssistChip(
+                        onClick = {
+                            val seoBlock = buildString {
+                                appendLine("[핵심 권리·시세 3줄 요약]")
+                                appendLine("- 사건번호 {사건번호} · {법원} · {주소} ({물건유형})")
+                                appendLine("- 감정가 {감정가} 대비 최저가 {최저가}({할인율}%), 입찰보증금 {보증금}")
+                                appendLine("- 말소기준권리 {말소기준권리} · 인수권리 {인수권리} · 실거래 중위가 {실거래중위가}")
+                                appendLine()
+                                appendLine("[자주 묻는 질문 Q&A]")
+                                appendLine("Q. {특수체크} 리스크 대응 입찰 전략은?")
+                                appendLine("A. 3개년 낙찰가율 {3개년낙찰률}% 반영 보수 {보수입찰가} / 적정 {적정입찰가} 기준 응찰을 권장합니다.")
+                            }.trim()
+                            bodyTemplate = if (bodyTemplate.isBlank()) seoBlock else "$bodyTemplate\n\n$seoBlock"
+                        },
+                        modifier = Modifier.testTag("btn_insert_top_seo_bundle"),
+                        label = {
+                            Text("+ 최상단 SEO·Q&A·경매필드 묶음", style = MaterialTheme.typography.labelSmall)
+                        }
+                    )
+                    AssistChip(
+                        onClick = {
+                            val seoTags = when (propertyType) {
+                                PropertyType.APT_OFFICETEL -> "딱찰,{지역}아파트경매,{사건번호},실거래가분석,말소기준권리,입찰보증금"
+                                PropertyType.COMMERCIAL_RETAIL -> "딱찰,{지역}상가경매,{사건번호},임대수익률,상가임대차,대항력분석"
+                                PropertyType.LAND_FARMLAND -> "딱찰,{지역}토지경매,{사건번호},농지취득자격증명,맹지도로접면,개발제한"
+                                PropertyType.VILLA_MULTIFAMILY -> "딱찰,{지역}빌라경매,{사건번호},전세권임차인,소액최우선변제,대지권"
+                                PropertyType.FACTORY_SPECIAL -> "딱찰,{지역}공장경매,{사건번호},기계기구일괄,산업단지,공장저당"
+                            }
+                            tagsTemplate = seoTags
+                        },
+                        modifier = Modifier.testTag("btn_insert_auction_seo_tags"),
+                        label = {
+                            Text("+ ${propertyType.displayLabel} SEO 태그 자동", style = MaterialTheme.typography.labelSmall)
+                        }
+                    )
                     BlogPostTemplateEngine.SUPPORTED_PLACEHOLDERS.forEach { item ->
                         AssistChip(
                             onClick = {

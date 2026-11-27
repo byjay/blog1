@@ -1,8 +1,10 @@
 package com.example.data
 
 import com.example.BuildConfig
+import com.example.engine.NaverKeywordExposureEngine
 import com.example.engine.NearbyMarketEngine
 import com.example.model.AuctionCaseIntel
+import com.example.model.KeywordBlogExposureReport
 import com.example.model.LegalDoctrineReport
 import com.example.model.MarketApiSourceStatus
 import com.example.model.NearbyMarketAnalysisReport
@@ -39,6 +41,60 @@ class NaverRealEstateApiClient(
 ) {
 
     data class GeoPoint(val lat: Double, val lon: Double)
+
+    sealed interface NaverKeywordExposureOutcome {
+        data class Success(val report: KeywordBlogExposureReport) : NaverKeywordExposureOutcome
+        data class Failure(val message: String, val apiKeyMissing: Boolean = false) : NaverKeywordExposureOutcome
+    }
+
+    suspend fun diagnoseKeywordBlogExposure(
+        keyword: String,
+        clientId: String = defaultClientId,
+        clientSecret: String = defaultClientSecret,
+        referenceDateYmd: String? = null
+    ): NaverKeywordExposureOutcome = withContext(ioDispatcher) {
+        val cleanKeyword = keyword.trim()
+        if (cleanKeyword.isBlank()) {
+            return@withContext NaverKeywordExposureOutcome.Failure("진단할 경매 키워드를 입력해 주세요.")
+        }
+
+        val validClientId = clientId.trim()
+            .takeIf { it.isNotBlank() && it != "NAVER_CLIENT_ID_DEFAULT_VALUE" }
+        val validClientSecret = clientSecret.trim()
+            .takeIf { it.isNotBlank() && it != "NAVER_CLIENT_SECRET_DEFAULT_VALUE" }
+
+        if (validClientId == null || validClientSecret == null) {
+            return@withContext NaverKeywordExposureOutcome.Failure(
+                message = "AI Studio Secrets(.env)에 NAVER_CLIENT_ID 및 NAVER_CLIENT_SECRET을 설정해야 실시간 네이버 블로그 노출 진단을 실행할 수 있습니다.",
+                apiKeyMissing = true
+            )
+        }
+
+        val encodedQuery = URLEncoder.encode(cleanKeyword, "UTF-8")
+        val blogReq = Request.Builder()
+            .url("${naverSearchBaseUrl.trimEnd('/')}/v1/search/blog.json?query=$encodedQuery&display=20&sort=sim")
+            .get()
+            .addHeader("X-Naver-Client-Id", validClientId)
+            .addHeader("X-Naver-Client-Secret", validClientSecret)
+            .build()
+
+        val res = executeRequest(blogReq)
+        if (!res.isSuccess) {
+            val detail = when (res.statusCode) {
+                401, 403 -> "네이버 검색 API 인증 실패(HTTP ${res.statusCode}) — Secrets 패널의 NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 값을 확인해 주세요."
+                429 -> "네이버 검색 API 일일 호출 한도 또는 속도 제한(HTTP 429)이 초과되었습니다."
+                else -> "네이버 검색 API 호출 실패(${res.errorMessage ?: "HTTP ${res.statusCode}"})"
+            }
+            return@withContext NaverKeywordExposureOutcome.Failure(detail, apiKeyMissing = false)
+        }
+
+        val report = NaverKeywordExposureEngine.analyzeBlogSearchJson(
+            keyword = cleanKeyword,
+            rawJson = res.body,
+            referenceDateYmd = referenceDateYmd
+        )
+        NaverKeywordExposureOutcome.Success(report)
+    }
 
     suspend fun fetchNearbyMarketAnalysis(
         auction: AuctionCaseIntel,

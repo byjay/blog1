@@ -382,14 +382,14 @@ class WeeklyAutoPublishLegalFollowUpTest {
             naverWorkerRelayEndpoint = "https://relay.example.com/publish",
             tistoryBlogUrl = "myauction.tistory.com",
             tistoryCategoryName = "배당·세무",
-            ddakchalApiBase = "https://ddakchal.com",
+            cloudflareSiteBaseInput = "https://aution.codeb.app",
             cloudflareBlogPath = "/reports",
             publishNaver = true,
             publishTistory = true,
             publishCloudflare = true
         )
         assertEquals("my_auction_blog", vm.uiState.value.config.naverBlogId)
-        assertEquals("https://ddakchal.com", vm.uiState.value.config.ddakchalApiBase)
+        assertEquals("https://aution.codeb.app", vm.uiState.value.config.cloudflareSiteBase)
 
         // 2. Generate 7-day weekly batch (3/day = 21 deduplicated posts)
         vm.setWeeklyDailyCount(3)

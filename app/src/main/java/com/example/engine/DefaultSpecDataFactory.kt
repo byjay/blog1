@@ -172,20 +172,8 @@ object DefaultSpecDataFactory {
                 ChannelPlatform.NAVER to "2026-11-22 $tNv"
             )
             val qaReport = QaVerificationEngine.auditSlot(auction, variants, scheduled, config)
-            val status = when {
-                idx == 0 -> PostStatus.PUBLISHED
-                idx == 1 -> PostStatus.QUEUED
-                else -> PostStatus.DRAFT
-            }
-            val publishedUrls = if (idx == 0) {
-                mapOf(
-                    ChannelPlatform.CLOUDFLARE to "${config.ddakchalApiBase}/blog/${auction.dedupKey}",
-                    ChannelPlatform.TISTORY to "https://ddakchal-report.tistory.com/entry/${auction.caseId}",
-                    ChannelPlatform.NAVER to "https://blog.naver.com/ddakchal_official/223698104211"
-                )
-            } else {
-                emptyMap()
-            }
+            val status = PostStatus.DRAFT
+            val publishedUrls = emptyMap<ChannelPlatform, String>()
             GeneratedPostSlot(
                 postId = "post-${auction.dedupKey}",
                 queueId = "q-20261122-${idx + 1}",
@@ -197,7 +185,7 @@ object DefaultSpecDataFactory {
                 status = status,
                 qaReport = qaReport,
                 publishedUrls = publishedUrls,
-                sourceLabel = "SPEC v13.4 기본 5슬롯"
+                sourceLabel = "로컬 초안 풀 (발행 전)"
             )
         }
     }
@@ -252,7 +240,8 @@ object DefaultSpecDataFactory {
         val intro = BoilerplateAndTemplateEngine.introHookPool[((seedIndex % 15) + 15) % 15]
         val transition = BoilerplateAndTemplateEngine.transitionPhrasePool[((seedIndex % 5) + 5) % 5]
         val cta = BoilerplateAndTemplateEngine.ctaClosingPool[(((seedIndex * 3 + 2) % 15) + 15) % 15]
-        val utmBase = "${config.ddakchalApiBase}/?utm_source=blog&utm_campaign=daily5&case=${auction.caseId}"
+        val siteBase = config.cloudflareSiteBase.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
+        val utmBase = "$siteBase/?utm_source=blog&utm_campaign=daily5&case=${auction.caseId}"
 
         val registryFacts = RegistryAndMotionEngine.buildRegistryFacts(auction)
         val gapGuSummary = registryFacts.filter { it.section == com.example.model.RegistrySection.GAP_GU }
@@ -1139,7 +1128,7 @@ $cfFunnelHtml
             caseId = "2025타경6297",
             platform = ChannelPlatform.CLOUDFLARE,
             status = PostStatus.PUBLISHED,
-            publishedUrl = "https://ddakchal.pages.dev/blog/ca-20250118006297-1",
+            publishedUrl = "https://aution.codeb.app/blog/ca-20250118006297-1",
             errorMessage = null,
             handoffReason = null,
             retryCount = 0,

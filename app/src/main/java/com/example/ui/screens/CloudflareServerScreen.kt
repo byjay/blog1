@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.ContentCopy
@@ -48,13 +49,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.example.data.ServerConfigStore
+import com.example.ui.util.SafeClipboardHelper
 import com.example.engine.BoilerplateAndTemplateEngine
 import com.example.model.ChannelPlatform
 import com.example.model.ServerAutomationConfig
@@ -86,12 +88,31 @@ fun CloudflareServerScreen(
     onQueryD1Queue: () -> Unit,
     onTriggerHandoffTest: (ChannelPlatform) -> Unit,
     onResolveHandoff: () -> Unit,
+    onRefreshSecurityAudit: () -> Unit = {},
+    onPurgePlaintextPw: () -> Unit = {},
+    onProbeNaverAndTistory: () -> Unit = {},
+    onSaveQuickSettings: (
+        cloudflareSiteBase: String,
+        cloudflareBlogPath: String,
+        naverKeepLoggedIn: Boolean,
+        tistoryKeepLoggedIn: Boolean,
+        tistoryAutoDirectPublish: Boolean,
+        grokFallbackEnabled: Boolean,
+        grokModelName: String
+    ) -> Unit = { _, _, _, _, _, _, _ -> },
+    onRunHeartbeat: () -> Unit = {},
+    onSyncGoogleAuthState: (String?) -> Unit = {},
+    onSignOutGoogle: () -> Unit = {},
+    onUpdateGrokConfig: (Boolean, String) -> Unit = { _, _ -> },
+    onRunPerfectDdakchalDiag: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var draft by remember { mutableStateOf(uiState.config) }
     var showSecrets by remember { mutableStateOf(false) }
     var exportTab by remember { mutableStateOf("WRANGLER") } // WRANGLER | WORKER_TS | D1_SQL | SELECTORS | ENV
+    var bundleCopyMessage by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(uiState.config) {
         draft = uiState.config
@@ -108,8 +129,8 @@ fun CloudflareServerScreen(
     ) {
         item {
             SectionHeader(
-                title = "클라우드플레어 서버 자동 세팅 & .env 보안 콘솔",
-                subtitle = "D1(ddakchal-db) · Worker Cron · R2 · Playwright 세션 제어",
+                title = "환경설정 · 보안 현황 대시보드 · CF서버",
+                subtitle = "상시 로그인 · aution.codeb.app · Google Gemini(1순위)/Grok(2순위) · 딱찰 D1/토큰 보안",
                 trailing = {
                     IconButton(
                         onClick = { showSecrets = !showSecrets },
@@ -122,6 +143,61 @@ fun CloudflareServerScreen(
                         )
                     }
                 }
+            )
+        }
+
+        item {
+            QuickSettingsAndAlwaysLoginCard(
+                config = uiState.config,
+                isBusy = uiState.isBusy,
+                onSaveQuickSettings = onSaveQuickSettings,
+                onRunHeartbeat = onRunHeartbeat
+            )
+        }
+
+        item {
+            GoogleGeminiAndGrokPriorityCard(
+                googleAccount = uiState.googleAccount,
+                config = uiState.config,
+                lastAiEngineUsed = uiState.lastAiEngineUsed,
+                isBusy = uiState.isBusy,
+                onSyncGoogleAuthState = onSyncGoogleAuthState,
+                onSignOutGoogle = onSignOutGoogle,
+                onUpdateGrokConfig = onUpdateGrokConfig
+            )
+        }
+
+        item {
+            DdakchalPerfectDiagnosticCard(
+                report = uiState.ddakchalFullDiagnostic,
+                isBusy = uiState.isBusy,
+                onRunFullDiagnostic = onRunPerfectDdakchalDiag
+            )
+        }
+
+        item {
+            SecurityDashboardHeroCard(
+                summary = uiState.securityDashboard,
+                isBusy = uiState.isBusy,
+                onRefreshAudit = onRefreshSecurityAudit,
+                onPurgePlaintextPw = onPurgePlaintextPw
+            )
+        }
+
+        item {
+            TokenHygieneCard(
+                summary = uiState.securityDashboard
+            )
+        }
+
+        item {
+            NaverTistoryLoginManagementCard(
+                config = uiState.config,
+                naverProbe = uiState.naverProbeResult,
+                tistoryProbe = uiState.tistoryProbeResult,
+                isBusy = uiState.isBusy,
+                onProbeConnections = onProbeNaverAndTistory,
+                onResolveHandoff = onResolveHandoff
             )
         }
 
@@ -353,6 +429,31 @@ fun CloudflareServerScreen(
                     )
                 }
 
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("저품질 '위험 높음' 시 자동 발행 일시 중지", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
+                        Text(
+                            if (draft.autoPauseOnHighRisk) "활성 (지수 급락·연속 실패 시 즉시 자동발행 차단)" else "해제 (위험 경고만 표시)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (draft.autoPauseOnHighRisk) MintSecondary else TistoryAmber
+                        )
+                    }
+                    Switch(
+                        checked = draft.autoPauseOnHighRisk,
+                        onCheckedChange = {
+                            val updated = draft.copy(autoPauseOnHighRisk = it)
+                            draft = updated
+                            onSaveConfig(updated)
+                        },
+                        modifier = Modifier.testTag("switch_settings_auto_pause_risk")
+                    )
+                }
+
                 Spacer(modifier = Modifier.height(12.dp))
                 Surface(
                     color = NavySurfaceElevated,
@@ -482,12 +583,20 @@ fun CloudflareServerScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("③ Cloudflare 자체웹 등록 활성화", style = MaterialTheme.typography.labelLarge, color = CloudflareSky)
+                    Text("③ Cloudflare 자체웹(aution.codeb.app) 등록 활성화", style = MaterialTheme.typography.labelLarge, color = CloudflareSky)
                     Switch(
                         checked = draft.publishTargetCloudflare,
                         onCheckedChange = { draft = draft.copy(publishTargetCloudflare = it) }
                     )
                 }
+                OutlinedTextField(
+                    value = draft.cloudflareSiteBase,
+                    onValueChange = { draft = draft.copy(cloudflareSiteBase = it) },
+                    label = { Text("CLOUDFLARE_SITE_BASE (블로그 도메인)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(6.dp))
                 OutlinedTextField(
                     value = draft.cloudflareBlogPath,
                     onValueChange = { draft = draft.copy(cloudflareBlogPath = it) },
@@ -562,16 +671,34 @@ fun CloudflareServerScreen(
                     border = BorderStroke(1.dp, NavyBorder),
                     modifier = Modifier.fillMaxWidth()
                 ) {
+                    SelectionContainer {
+                        Text(
+                            text = codeText,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFamily),
+                            color = TextPrimary,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+                if (!bundleCopyMessage.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = codeText,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = JetBrainsMonoFamily),
-                        color = TextPrimary,
-                        modifier = Modifier.padding(12.dp)
+                        text = bundleCopyMessage!!,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MintSecondary
                     )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(
-                    onClick = { clipboard.setText(AnnotatedString(codeText)) },
+                    onClick = {
+                        val res = SafeClipboardHelper.copyPlainTextSafely(
+                            context = context,
+                            label = "서버 설정(${exportTab})",
+                            text = codeText,
+                            composeClipboard = clipboard
+                        )
+                        bundleCopyMessage = res.message
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)

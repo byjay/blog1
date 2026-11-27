@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,13 +20,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.outlined.FactCheck
-import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Dashboard
 import androidx.compose.material.icons.outlined.Inventory2
+import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -54,11 +55,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.ai.GoogleAccountAuthHelper
 import com.example.ai.configureAppCheck
 import com.example.ui.StudioViewModel
 import com.example.ui.screens.ChannelQaScreen
 import com.example.ui.screens.CloudflareServerScreen
 import com.example.ui.screens.DashboardScreen
+import com.example.ui.screens.DdakchalTopStatusBar
 import com.example.ui.screens.TemplatesAndRulesScreen
 import com.example.ui.screens.WarehouseAndVisitorDashboardScreen
 import com.example.ui.theme.DdakchalStudioTheme
@@ -68,6 +71,8 @@ import com.example.ui.theme.MintSecondary
 import com.example.ui.theme.NavyBackground
 import com.example.ui.theme.NavySurface
 import com.example.ui.theme.TextSecondary
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import android.graphics.Color as AndroidColor
 
 private enum class StudioTab(
@@ -80,7 +85,7 @@ private enum class StudioTab(
     WAREHOUSE("warehouse", "창고·로그", Icons.Filled.Inventory2, Icons.Outlined.Inventory2),
     QA_INSPECT("qa_inspect", "3채널QA", Icons.AutoMirrored.Filled.FactCheck, Icons.AutoMirrored.Outlined.FactCheck),
     TEMPLATES("templates", "템플릿", Icons.Filled.Tune, Icons.Outlined.Tune),
-    SERVER("server", "CF서버", Icons.Filled.CloudQueue, Icons.Outlined.CloudQueue)
+    SERVER("server", "설정·보안", Icons.Filled.Security, Icons.Outlined.Security)
 }
 
 class MainActivity : ComponentActivity() {
@@ -119,6 +124,28 @@ fun DdakchalStudioApp() {
         if (!msg.isNullOrBlank()) {
             snackbarHostState.showSnackbar(msg)
             viewModel.clearBanners()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        runCatching {
+            GoogleAccountAuthHelper.attemptSilentGoogleSignIn(context)
+        }
+        viewModel.syncGoogleAuthState()
+    }
+
+    LaunchedEffect(
+        uiState.telemetry.autoMonitorEnabled,
+        uiState.config.ddakchalApiBase,
+        uiState.config.crawlerSyncToken
+    ) {
+        if (!uiState.telemetry.autoMonitorEnabled || uiState.config.ddakchalApiBase.isBlank()) {
+            return@LaunchedEffect
+        }
+        viewModel.refreshDdakchalServerTelemetry(alsoSyncFeed = true)
+        while (isActive && uiState.telemetry.autoMonitorEnabled) {
+            delay(30_000L)
+            viewModel.refreshDdakchalServerTelemetry(alsoSyncFeed = false)
         }
     }
 
@@ -197,110 +224,169 @@ fun DdakchalStudioApp() {
                     }
                 }
 
-                Box(modifier = Modifier.weight(1f).fillMaxSize()) {
-                    when (activeTab) {
-                        StudioTab.DASHBOARD -> DashboardScreen(
-                            uiState = uiState,
-                            onSelectWeeklyDailyCount = viewModel::setWeeklyDailyCount,
-                            onGenerateWeeklyBatch = viewModel::generateWeeklyBatchAndSchedule,
-                            onCreateHighScoreAndAutoRegister = { viewModel.createHighScoreAndAutoRegister() },
-                            onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
-                            onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
-                            onPublishNaverDirectAndVerify = { postId, url ->
-                                viewModel.publishNaverDirectAndVerify(postId, url)
-                            },
-                            onPublishSelectedChannelsAndVerify = { postId, url ->
-                                viewModel.publishSelectedChannelsAndVerify(postId, url)
-                            },
-                            onOpenWarehouse = { activeTab = StudioTab.WAREHOUSE },
-                            onRunAiEvalSelected = { viewModel.evaluateSlotWithAi30Criteria() },
-                            onTestBusanProfitableLand = viewModel::createAndEvaluateBusanProfitableLandTest,
-                            onTestLowScoreDraft = viewModel::createLowScoreDraftForAutoFixTest,
-                            onApplyAiAutoFixes = viewModel::applyAiAutoFixesToArticle,
-                            onSyncPack = viewModel::syncSyndicationPackOnly,
-                            onInspectSlot = { postId ->
-                                viewModel.selectSlot(postId)
-                                activeTab = StudioTab.QA_INSPECT
-                            },
-                            onResolveHandoff = viewModel::resolveSessionHandoff,
-                            onAddCustomProperty = viewModel::addCustomCrawledPropertyAndSchedule
-                        )
-                        StudioTab.WAREHOUSE -> WarehouseAndVisitorDashboardScreen(
-                            uiState = uiState,
-                            onCreateHighScoreAndAutoRegister = viewModel::createHighScoreAndAutoRegister,
-                            onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
-                            onImportQueueToWarehouse = viewModel::importQueueSlotsToWarehouse,
-                            onRun30PointEval = viewModel::run30PointEvaluationOnWarehouseItem,
-                            onDeleteWarehouseArticle = viewModel::deleteWarehouseArticle,
-                            onInspectArticleInQa = { postId ->
-                                viewModel.selectSlot(postId)
-                                activeTab = StudioTab.QA_INSPECT
-                            },
-                            onRefreshVisitorTelemetry = viewModel::refreshVisitorTrafficTelemetry
-                        )
-                        StudioTab.QA_INSPECT -> ChannelQaScreen(
-                            uiState = uiState,
-                            onSelectSlot = viewModel::selectSlot,
-                            onSelectChannel = viewModel::selectChannel,
-                            onSelectRegistryTemplateType = viewModel::selectRegistryTemplateType,
-                            onRewriteSlot = viewModel::rewriteSlotToPassQa,
-                            onScheduleSlot = viewModel::scheduleSlotWithStaggeredJitter,
-                            onToggleAutoQualityDefense = viewModel::toggleAutoQualityDefense,
-                            onRunQualityDefense = viewModel::applyQualityDefenseToSlot,
-                            onFetchNaverMarket = { postId -> viewModel.fetchNearbyMarketAndRebid(postId) },
-                            onRunLegalVerify = { postId -> viewModel.runLegalDoctrineVerification(postId) },
-                            onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
-                            onPublishNaverDirectAndVerify = { postId, url ->
-                                viewModel.publishNaverDirectAndVerify(postId, url)
-                            },
-                            onPublishSelectedChannelsAndVerify = { postId, url ->
-                                viewModel.publishSelectedChannelsAndVerify(postId, url)
-                            },
-                            onReinvestigateFollowUp = { postId, outcome, winMan, nextDate, note ->
-                                viewModel.reinvestigatePostAuctionAndCreateFollowUp(
-                                    postId = postId,
-                                    outcomeType = outcome,
-                                    actualWinningManWon = winMan,
-                                    nextAuctionDate = nextDate,
-                                    courtNote = note
-                                )
-                            },
-                            onLegalStudyFilterChange = viewModel::setLegalStudyFilter
-                        )
-                        StudioTab.TEMPLATES -> TemplatesAndRulesScreen(
-                            uiState = uiState,
-                            onSaveYaml = viewModel::saveYamlTemplate,
-                            onRotateBoilerplate = viewModel::rotateBoilerplatePool,
-                            onCreatePostTemplate = viewModel::createPostTemplate,
-                            onSavePostTemplate = viewModel::savePostTemplate,
-                            onActivatePostTemplate = viewModel::setActivePostTemplate,
-                            onDeletePostTemplate = viewModel::deletePostTemplate,
-                            onResetPostTemplates = viewModel::resetPostTemplates,
-                            onToggleSeoChecklistItem = viewModel::toggleSeoChecklistItem,
-                            onCreateSeoChecklistItem = viewModel::createSeoChecklistItem,
-                            onSaveSeoChecklistItem = viewModel::saveSeoChecklistItem,
-                            onDeleteSeoChecklistItem = viewModel::deleteSeoChecklistItem,
-                            onResetSeoChecklist = viewModel::resetSeoChecklist,
-                            onSaveProFunnel = viewModel::saveProFunnelConfig,
-                            onResetProFunnel = viewModel::resetProFunnelConfig
-                        )
-                        StudioTab.SERVER -> CloudflareServerScreen(
-                            uiState = uiState,
-                            onSaveConfig = viewModel::updateConfig,
-                            onVerifyCloudflare = viewModel::verifyCloudflareSetup,
-                            onMigrateD1 = viewModel::provisionD1SchemaOnCloudflare,
-                            onRegisterCron = viewModel::registerCloudflareCronTrigger,
-                            onQueryD1Queue = viewModel::queryD1QueueFromCloudflare,
-                            onTriggerHandoffTest = viewModel::triggerCaptchaHandoffSimulation,
-                            onResolveHandoff = viewModel::resolveSessionHandoff
-                        )
-                    }
+                Column(modifier = Modifier.weight(1f).fillMaxSize()) {
+                    DdakchalTopStatusBar(
+                        telemetry = uiState.telemetry,
+                        isMobileSimpleMode = uiState.isMobileSimpleMode,
+                        onToggleMobileMode = viewModel::setMobileSimpleMode,
+                        onRefreshPing = { viewModel.refreshDdakchalServerTelemetry(alsoSyncFeed = true) },
+                        onToggleAutoMonitor = viewModel::toggleAutoMonitorPolling,
+                        securitySummary = uiState.securityDashboard,
+                        onOpenSecurityDashboard = { activeTab = StudioTab.SERVER },
+                        onOpenSettings = { activeTab = StudioTab.SERVER }
+                    )
 
-                    if (uiState.isBusy) {
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = EmeraldPrimary
-                        )
+                    Box(modifier = Modifier.weight(1f).fillMaxSize()) {
+                        when (activeTab) {
+                            StudioTab.DASHBOARD -> DashboardScreen(
+                                uiState = uiState,
+                                onSelectWeeklyDailyCount = viewModel::setWeeklyDailyCount,
+                                onGenerateWeeklyBatch = viewModel::generateWeeklyBatchAndSchedule,
+                                onCreateHighScoreAndAutoRegister = { viewModel.createHighScoreAndAutoRegister() },
+                                onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
+                                onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
+                                onPublishNaverDirectAndVerify = { postId, url ->
+                                    viewModel.publishNaverDirectAndVerify(postId, url)
+                                },
+                                onPublishSelectedChannelsAndVerify = { postId, url ->
+                                    viewModel.publishSelectedChannelsAndVerify(postId, url)
+                                },
+                                onOpenWarehouse = { activeTab = StudioTab.WAREHOUSE },
+                                onOpenTemplates = { activeTab = StudioTab.TEMPLATES },
+                                onOpenSecurityDashboard = { activeTab = StudioTab.SERVER },
+                                onOpenSettings = { activeTab = StudioTab.SERVER },
+                                onToggleMobileMode = viewModel::setMobileSimpleMode,
+                                onCrawlAndSync = viewModel::triggerCrawlAndSyncPipeline,
+                                onRefreshServerTelemetry = { viewModel.refreshDdakchalServerTelemetry(alsoSyncFeed = true) },
+                                onRefreshQueueCharts = { viewModel.syncRealBlogQueueWithRetrofit(announceBanner = true) },
+                                onEvaluateRisk = { viewModel.evaluateLowQualityRiskAndPauseIfNeeded(announceBanner = true) },
+                                onResumeAutoPublish = viewModel::resumeAutoPublishAfterRiskMitigation,
+                                onToggleAutoPauseOnHighRisk = viewModel::toggleAutoPauseOnHighRisk,
+                                onSearchCaseWithAi = viewModel::searchCaseWithAiAndOptimize,
+                                onDiagnoseNaverKeyword = viewModel::diagnoseNaverKeywordExposure,
+                                onTestRegisterAiSearchedCase = viewModel::testRegisterAiSearchedCase,
+                                onGenerateThreePureHtml = viewModel::generateThreePureHtmlPosts,
+                                onDismissHtmlBatch = viewModel::dismissHtmlBatchBundle,
+                                onSelectTopicSort = viewModel::evaluateAndRankTopics,
+                                onRankTopics = { viewModel.evaluateAndRankTopics() },
+                                onApplyTopTopics = { viewModel.applyTopSelectedTopicsToQueue(3) },
+                                onSelectAndRegisterTopic = viewModel::selectAndAutoRegisterTopic,
+                                onRunPerfectDdakchalDiag = viewModel::runPerfectDdakchalServerDiagnostic,
+                                onRefreshNaverPublishStatus = viewModel::refreshNaverPublishStatuses,
+                                onSelectNaverWriteMode = viewModel::updateNaverWriteMode,
+                                onRunAiEvalSelected = { viewModel.evaluateSlotWithAi30Criteria() },
+                                onTestBusanProfitableLand = viewModel::createAndEvaluateBusanProfitableLandTest,
+                                onTestLowScoreDraft = viewModel::createLowScoreDraftForAutoFixTest,
+                                onApplyAiAutoFixes = viewModel::applyAiAutoFixesToArticle,
+                                onSyncPack = viewModel::syncSyndicationPackOnly,
+                                onInspectSlot = { postId ->
+                                    viewModel.selectSlot(postId)
+                                    activeTab = StudioTab.QA_INSPECT
+                                },
+                                onResolveHandoff = viewModel::resolveSessionHandoff,
+                                onSelectChannel = viewModel::selectChannel,
+                                onAttachCourtPhoto = viewModel::attachCourtPhotoToSlot,
+                                onAddVisitRecord = viewModel::addFieldVisitRecord,
+                                onAddCustomProperty = viewModel::addCustomCrawledPropertyAndSchedule
+                            )
+                            StudioTab.WAREHOUSE -> WarehouseAndVisitorDashboardScreen(
+                                uiState = uiState,
+                                onCreateHighScoreAndAutoRegister = viewModel::createHighScoreAndAutoRegister,
+                                onAutoFixAndRegisterSlot = viewModel::autoFixAndRegisterSlot,
+                                onImportQueueToWarehouse = viewModel::importQueueSlotsToWarehouse,
+                                onRun30PointEval = viewModel::run30PointEvaluationOnWarehouseItem,
+                                onDeleteWarehouseArticle = viewModel::deleteWarehouseArticle,
+                                onInspectArticleInQa = { postId ->
+                                    viewModel.selectSlot(postId)
+                                    activeTab = StudioTab.QA_INSPECT
+                                },
+                                onRefreshVisitorTelemetry = viewModel::refreshVisitorTrafficTelemetry,
+                                onRefreshQueueCharts = { viewModel.syncRealBlogQueueWithRetrofit(announceBanner = true) },
+                                onOpenSettings = { activeTab = StudioTab.SERVER }
+                            )
+                            StudioTab.QA_INSPECT -> ChannelQaScreen(
+                                uiState = uiState,
+                                onSelectSlot = viewModel::selectSlot,
+                                onSelectChannel = viewModel::selectChannel,
+                                onSelectRegistryTemplateType = viewModel::selectRegistryTemplateType,
+                                onRewriteSlot = viewModel::rewriteSlotToPassQa,
+                                onScheduleSlot = viewModel::scheduleSlotWithStaggeredJitter,
+                                onToggleAutoQualityDefense = viewModel::toggleAutoQualityDefense,
+                                onRunQualityDefense = viewModel::applyQualityDefenseToSlot,
+                                onFetchNaverMarket = { postId -> viewModel.fetchNearbyMarketAndRebid(postId) },
+                                onRunLegalVerify = { postId -> viewModel.runLegalDoctrineVerification(postId) },
+                                onSaveThreeChannelDestinations = viewModel::saveThreeChannelDestinations,
+                                onPublishNaverDirectAndVerify = { postId, url ->
+                                    viewModel.publishNaverDirectAndVerify(postId, url)
+                                },
+                                onPublishSelectedChannelsAndVerify = { postId, url ->
+                                    viewModel.publishSelectedChannelsAndVerify(postId, url)
+                                },
+                                onReinvestigateFollowUp = { postId, outcome, winMan, nextDate, note ->
+                                    viewModel.reinvestigatePostAuctionAndCreateFollowUp(
+                                        postId = postId,
+                                        outcomeType = outcome,
+                                        actualWinningManWon = winMan,
+                                        nextAuctionDate = nextDate,
+                                        courtNote = note
+                                    )
+                                },
+                                onLegalStudyFilterChange = viewModel::setLegalStudyFilter,
+                                onAttachCourtPhoto = viewModel::attachCourtPhotoToSlot,
+                                onAddVisitRecord = viewModel::addFieldVisitRecord
+                            )
+                            StudioTab.TEMPLATES -> TemplatesAndRulesScreen(
+                                uiState = uiState,
+                                onSaveYaml = viewModel::saveYamlTemplate,
+                                onRotateBoilerplate = viewModel::rotateBoilerplatePool,
+                                onCreatePostTemplate = viewModel::createPostTemplate,
+                                onSavePostTemplate = viewModel::savePostTemplate,
+                                onActivatePostTemplate = viewModel::setActivePostTemplate,
+                                onDeletePostTemplate = viewModel::deletePostTemplate,
+                                onResetPostTemplates = viewModel::resetPostTemplates,
+                                onToggleSeoChecklistItem = viewModel::toggleSeoChecklistItem,
+                                onCreateSeoChecklistItem = viewModel::createSeoChecklistItem,
+                                onSaveSeoChecklistItem = viewModel::saveSeoChecklistItem,
+                                onDeleteSeoChecklistItem = viewModel::deleteSeoChecklistItem,
+                                onResetSeoChecklist = viewModel::resetSeoChecklist,
+                                onSaveProFunnel = viewModel::saveProFunnelConfig,
+                                onResetProFunnel = viewModel::resetProFunnelConfig,
+                                onCrawlAndSync = viewModel::triggerCrawlAndSyncPipeline
+                            )
+                            StudioTab.SERVER -> CloudflareServerScreen(
+                                uiState = uiState,
+                                onSaveConfig = viewModel::updateConfig,
+                                onVerifyCloudflare = viewModel::verifyCloudflareSetup,
+                                onMigrateD1 = viewModel::provisionD1SchemaOnCloudflare,
+                                onRegisterCron = viewModel::registerCloudflareCronTrigger,
+                                onQueryD1Queue = viewModel::queryD1QueueFromCloudflare,
+                                onTriggerHandoffTest = viewModel::triggerCaptchaHandoffSimulation,
+                                onResolveHandoff = viewModel::resolveSessionHandoff,
+                                onRefreshSecurityAudit = viewModel::refreshSecurityAudit,
+                                onPurgePlaintextPw = viewModel::purgeLegacyPlaintextPasswords,
+                                onProbeNaverAndTistory = viewModel::probeNaverAndTistoryConnections,
+                                onSaveQuickSettings = viewModel::saveQuickSettings,
+                                onRunHeartbeat = viewModel::runAlwaysLoggedInHeartbeat,
+                                onSyncGoogleAuthState = viewModel::syncGoogleAuthState,
+                                onSignOutGoogle = { viewModel.signOutGoogle(context) },
+                                onUpdateGrokConfig = { enabled, model ->
+                                    viewModel.updateConfig(
+                                        uiState.config.copy(
+                                            grokFallbackEnabled = enabled,
+                                            grokModelName = model
+                                        )
+                                    )
+                                },
+                                onRunPerfectDdakchalDiag = viewModel::runPerfectDdakchalServerDiagnostic
+                            )
+                        }
+
+                        if (uiState.isBusy) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = EmeraldPrimary
+                            )
+                        }
                     }
                 }
             }

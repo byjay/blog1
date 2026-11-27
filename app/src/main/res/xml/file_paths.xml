@@ -3,4 +3,7 @@
     <cache-path
         name="infographics"
         path="infographics/" />
+    <cache-path
+        name="html_exports"
+        path="html_exports/" />
 </paths>
