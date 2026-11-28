@@ -48,8 +48,13 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class WeeklyAutoPublishLegalFollowUpTest {
 
     @get:Rule
@@ -104,7 +109,7 @@ class WeeklyAutoPublishLegalFollowUpTest {
     fun defaultSpecDataFactory_preserves5SlotsWithContextualLegalNoteAnd95Score() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel)
+        val slots = TestFixtures.sampleSlots(cfg, funnel)
         assertEquals(5, slots.size)
 
         slots.forEach { slot ->
@@ -138,7 +143,7 @@ class WeeklyAutoPublishLegalFollowUpTest {
         assertEquals(1, redevelopmentFilter.size)
         assertEquals("DB-URB-001", redevelopmentFilter.first().codeId)
 
-        val baseAuction = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig()).first().auctionCase
+        val baseAuction = TestFixtures.sampleSlots(ServerAutomationConfig()).first().auctionCase
         val landTerm = LegalTermStudyEngine.selectContextualTerm(
             baseAuction.copy(propertyType = PropertyType.LAND_FARMLAND, assumedRightsText = "지목 전 맹지 확인")
         )
@@ -152,7 +157,7 @@ class WeeklyAutoPublishLegalFollowUpTest {
 
     @Test
     fun investmentAttractivenessEngine_scoresWithinBoundsAndIncludesDisclaimerAnd5Competitors() {
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig())
+        val slots = TestFixtures.sampleSlots(ServerAutomationConfig())
         slots.forEach { slot ->
             val score = InvestmentAttractivenessEngine.score(slot.auctionCase)
             assertTrue(score.totalScore in 0..100)
@@ -171,7 +176,7 @@ class WeeklyAutoPublishLegalFollowUpTest {
     fun postAuctionFollowUpEngine_handlesWinningAndFailedDropAndPassesQa() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val baseSlot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel).first()
+        val baseSlot = TestFixtures.sampleSlots(cfg, funnel).first()
         val pastAuction = baseSlot.auctionCase.copy(auctionDate = "2026-10-15")
         val pastSlot = baseSlot.copy(auctionCase = pastAuction)
 
@@ -218,17 +223,46 @@ class WeeklyAutoPublishLegalFollowUpTest {
     }
 
     @Test
-    fun weeklyBatchScheduleEngine_generatesDeduplicated21And35SlotsWith95PlusAndStaggeredTimes() {
+    fun weeklyBatchScheduleEngine_schedulesDeduplicatedRealServerSlotsWith95PlusAndZeroFakeGeneration() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val initialSlots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel)
-        val existingServerSlot = initialSlots.first()
+        val baseAuctions = TestFixtures.sampleAuctions()
+        val serverSlots25 = (1..25).map { idx ->
+            val templateAuction = baseAuctions[(idx - 1) % baseAuctions.size]
+            val realAuction = templateAuction.copy(
+                dedupKey = "srv-real-$idx",
+                caseId = "2026타경${1000 + idx}"
+            )
+            val variants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(realAuction, idx, cfg, proFunnel = funnel)
+            val qa = QaVerificationEngine.auditSlot(realAuction, variants, emptyMap(), cfg)
+            GeneratedPostSlot(
+                postId = "post-srv-$idx",
+                queueId = "q-srv-$idx",
+                slotIndex = idx,
+                publishDate = "2026-11-23",
+                auctionCase = realAuction,
+                variants = variants,
+                scheduledTimes = emptyMap(),
+                status = PostStatus.QUEUED,
+                qaReport = qa
+            )
+        }
 
-        // 3/day x 7 days = 21 deduplicated slots, prioritizing server slot without duplicating caseId
+        // Zero fake fallback when no server slots exist
+        val (emptyPlan, _) = WeeklyBatchScheduleEngine.buildWeekly7DayPlan(
+            dailyCount = 3,
+            days = 7,
+            serverSyncedSlots = emptyList(),
+            config = cfg,
+            proFunnel = funnel
+        )
+        assertTrue("Weekly plan must never invent synthetic cases when server list is empty", emptyPlan.isEmpty())
+
+        // 3/day x 7 days = 21 deduplicated real server slots
         val (plan21, _) = WeeklyBatchScheduleEngine.buildWeekly7DayPlan(
             dailyCount = 3,
             days = 7,
-            serverSyncedSlots = listOf(existingServerSlot),
+            serverSyncedSlots = serverSlots25,
             existingCaseIds = emptySet(),
             config = cfg,
             proFunnel = funnel,
@@ -236,7 +270,6 @@ class WeeklyAutoPublishLegalFollowUpTest {
         )
         assertEquals(21, plan21.size)
         assertEquals(21, plan21.map { it.auctionCase.caseId }.toSet().size)
-        assertEquals(existingServerSlot.auctionCase.caseId, plan21.first().auctionCase.caseId)
         assertEquals(7, plan21.map { it.publishDate }.toSet().size)
 
         plan21.forEach { slot ->
@@ -250,20 +283,6 @@ class WeeklyAutoPublishLegalFollowUpTest {
                 assertFalse("Anti-bot rule prohibits :00: minute in $ts", ts.contains(":00:"))
             }
         }
-
-        // 5/day x 7 days = 35 deduplicated slots
-        val (plan35, _) = WeeklyBatchScheduleEngine.buildWeekly7DayPlan(
-            dailyCount = 5,
-            days = 7,
-            serverSyncedSlots = emptyList(),
-            existingCaseIds = setOf(existingServerSlot.auctionCase.caseId),
-            config = cfg,
-            proFunnel = funnel,
-            startDateIso = "2026-11-23"
-        )
-        assertEquals(35, plan35.size)
-        assertEquals(35, plan35.map { it.auctionCase.caseId }.toSet().size)
-        assertFalse(plan35.any { it.auctionCase.caseId == existingServerSlot.auctionCase.caseId })
     }
 
     @Test
@@ -277,7 +296,7 @@ class WeeklyAutoPublishLegalFollowUpTest {
             publishTargetTistory = true,
             publishTargetCloudflare = true
         )
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfgBase).first()
+        val slot = TestFixtures.sampleSlots(cfgBase).first()
 
         // 1. Live 200 OK interceptor (relay POST + HTTP GET)
         val liveInterceptor = Interceptor { chain ->
@@ -351,14 +370,38 @@ class WeeklyAutoPublishLegalFollowUpTest {
             }.build(),
             ioDispatcher = testDispatcher
         )
+        val serverItems21 = (1..21).joinToString(",") { i ->
+            val a = TestFixtures.sampleAuctions()[(i - 1) % 5]
+            """
+            {
+              "id": "wk-$i",
+              "case_no": "2026타경${7000 + i}",
+              "auction_dedup_key": "wk-dedup-$i",
+              "court_name": "${a.courtName}",
+              "address": "${a.address}",
+              "property_type": "${a.propertyType.name}",
+              "appraisal_krw": ${a.appraisalPriceKrw},
+              "min_bid_krw": ${a.minBidPriceKrw},
+              "discount_rate_pct": ${a.discountRatePct},
+              "base_right_date": "${a.baseRightDate}",
+              "real_trade_median_krw": ${a.recentRealTradeMedianKrw}
+            }
+            """.trimIndent()
+        }
         val fastMockApi = CloudflareAndDdakchalApi(
             client = OkHttpClient.Builder().addInterceptor { chain ->
+                val url = chain.request().url.toString()
+                val body = if (url.contains("/syndication-pack")) {
+                    """{"ok":true,"data":{"items":[$serverItems21]}}"""
+                } else {
+                    """{"items":[]}"""
+                }
                 Response.Builder()
                     .request(chain.request())
                     .protocol(Protocol.HTTP_1_1)
                     .code(200)
                     .message("OK")
-                    .body("""{"items":[]}""".toResponseBody("application/json".toMediaType()))
+                    .body(body.toResponseBody("application/json".toMediaType()))
                     .build()
             }.build(),
             ioDispatcher = testDispatcher
@@ -390,6 +433,8 @@ class WeeklyAutoPublishLegalFollowUpTest {
         )
         assertEquals("my_auction_blog", vm.uiState.value.config.naverBlogId)
         assertEquals("https://aution.codeb.app", vm.uiState.value.config.cloudflareSiteBase)
+
+        vm.applyInlineServerAuthAndSave("https://ddakchal.pages.dev", "test-sync-token", "", "", "")
 
         // 2. Generate 7-day weekly batch (3/day = 21 deduplicated posts)
         vm.setWeeklyDailyCount(3)

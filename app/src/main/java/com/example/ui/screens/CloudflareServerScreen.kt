@@ -131,6 +131,8 @@ fun CloudflareServerScreen(
             SectionHeader(
                 title = "환경설정 · 보안 현황 대시보드 · CF서버",
                 subtitle = "상시 로그인 · aution.codeb.app · Google Gemini(1순위)/Grok(2순위) · 딱찰 D1/토큰 보안",
+                icon = Icons.Filled.Security,
+                easyGuide = "딱찰 서버·Cloudflare D1 키, 블로그 자동 로그인 유지, AI 모델을 안전하게 설정하고 진단합니다.",
                 trailing = {
                     IconButton(
                         onClick = { showSecrets = !showSecrets },
@@ -645,7 +647,7 @@ fun CloudflareServerScreen(
                 ) {
                     listOf(
                         "WRANGLER" to "wrangler.toml",
-                        "WORKER_TS" to "worker-cron.ts",
+                        "WORKER_TS" to "worker.ts (웹+크론)",
                         "D1_SQL" to "0010_d1.sql",
                         "SELECTORS" to "selectors.json",
                         "ENV" to ".env.blog"

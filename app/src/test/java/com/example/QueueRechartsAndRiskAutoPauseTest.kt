@@ -10,7 +10,6 @@ import com.example.data.NaverRealEstateApiClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
 import com.example.engine.ChannelIndexRiskEngine
-import com.example.engine.DefaultSpecDataFactory
 import com.example.model.ChannelPlatform
 import com.example.model.ChannelPublishStat
 import com.example.model.DailyPublishVolumePoint
@@ -303,7 +302,7 @@ class QueueRechartsAndRiskAutoPauseTest {
             tistoryBlogUrl = "https://my-auction.tistory.com",
             cloudflareSiteBase = "https://aution.codeb.app"
         )
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg).first()
+        val slot = TestFixtures.sampleSlots(cfg).first()
 
         val naverReport = directClient.publishNaverDirectAndVerify(slot, cfg, customNaverPostUrl = "")
         assertFalse("Homepage GET 200 without relay/postUrl must NOT pass", naverReport.naverDirectPassed)
@@ -334,7 +333,7 @@ class QueueRechartsAndRiskAutoPauseTest {
             autoPauseOnHighRisk = true,
             dailyPostLimit = 8
         )
-        val baseSlot = DefaultSpecDataFactory.buildInitialDaily5Slots(baseConfig).first()
+        val baseSlot = TestFixtures.sampleSlots(baseConfig).first()
         val riskyNaverVariant = baseSlot.variants[ChannelPlatform.NAVER]!!.copy(
             bodyText = "반드시 클릭 https://spam-external.example.com 지금 확인하세요!",
             bodyHtml = "<p>https://spam-external.example.com</p>"

@@ -29,8 +29,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
-import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.AddLocationAlt
+import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DirectionsWalk
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Gavel
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -82,6 +84,8 @@ import com.example.model.VisitRecordSource
 import com.example.ui.theme.AmberContainer
 import com.example.ui.theme.CloudflareContainer
 import com.example.ui.theme.CloudflareSky
+import com.example.ui.theme.CrimsonAlert
+import com.example.ui.theme.CrimsonContainer
 import com.example.ui.theme.EmeraldContainer
 import com.example.ui.theme.EmeraldPrimary
 import com.example.ui.theme.JetBrainsMonoFamily
@@ -183,10 +187,11 @@ fun CourtFullEvidenceArchiveCard(
     archive: CourtFullArchiveRecord,
     onSharePhotoPng: (CourtPhotoEvidence) -> Unit,
     onAttachPhotoUri: ((shotOrder: Int, uriString: String) -> Unit)? = null,
-    onAddVisitRecord: ((source: VisitRecordSource, visitedAt: String, occupancyStatus: String, findingsNote: String) -> Unit)? = null
+    onAddVisitRecord: ((source: VisitRecordSource, visitedAt: String, occupancyStatus: String, findingsNote: String) -> Unit)? = null,
+    onRefreshCourtEvidence: (() -> Unit)? = null
 ) {
     var expanded by remember(auction.caseId) { mutableStateOf(true) }
-    var activeTab by remember(auction.caseId) { mutableIntStateOf(0) } // 0: 현장사진 | 1: 문건 | 2: 등기·권리 | 3: 방문기록
+    var activeTab by remember(auction.caseId) { mutableIntStateOf(0) } // 0: 현장사진 | 1: 문건 | 2: 등기·권리 | 3: 방문기록 | 4: 4축 칼분석
     var selectedShotIdx by remember(auction.caseId) { mutableIntStateOf(0) }
     var showAddVisitForm by remember(auction.caseId) { mutableStateOf(false) }
     var newVisitSource by remember(auction.caseId) { mutableStateOf(VisitRecordSource.FIELD_IMJANG) }
@@ -202,19 +207,9 @@ fun CourtFullEvidenceArchiveCard(
     val activePhoto = archive.photos.getOrNull(safeIdx)
     val realPhotoCount = archive.photos.count { it.imageUrl.isNotBlank() }
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null && activePhoto != null) {
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            }
-            onAttachPhotoUri?.invoke(activePhoto.shotOrder, uri.toString())
-        }
-    }
+    // Keep parameter referenced for backward compatibility without showing manual upload UI
+    @Suppress("UNUSED_VARIABLE")
+    val unusedAttachCallback = onAttachPhotoUri
 
     StudioCard(
         borderColor = MintSecondary.copy(alpha = 0.6f),
@@ -261,6 +256,9 @@ fun CourtFullEvidenceArchiveCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    archive.sharpAnalysis?.let { sharp ->
+                        StatusChip(text = sharp.sharpGradeBadge, textColor = EmeraldPrimary, backgroundColor = EmeraldContainer)
+                    }
                     StatusChip(text = archive.profitabilityBadge, textColor = MintSecondary, backgroundColor = EmeraldContainer)
                     StatusChip(text = "${archive.areaSqmLabel} · ${archive.landCategoryLabel}", textColor = CloudflareSky, backgroundColor = CloudflareContainer)
                     StatusChip(text = archive.zoningLabel, textColor = TistoryAmber, backgroundColor = AmberContainer)
@@ -296,10 +294,23 @@ fun CourtFullEvidenceArchiveCard(
                         label = { Text("공식 문건 (${archive.documents.size}종)") },
                         modifier = Modifier.testTag("tab_court_docs")
                     )
+                    if (archive.sharpAnalysis != null) {
+                        FilterChip(
+                            selected = activeTab == 4,
+                            onClick = { activeTab = 4 },
+                            label = { Text("4축 칼분석") },
+                            modifier = Modifier.testTag("tab_court_sharp_analysis")
+                        )
+                    }
                 }
 
                 when (activeTab) {
                     0 -> {
+                        EasyMenuGuideStrip(
+                            icon = Icons.Filled.PhotoLibrary,
+                            easyGuide = "법원 감정평가서·현황조사서와 딱찰 서버가 수집한 실제 현장 사진입니다. 직접 첨부하지 않아도 자동 연결됩니다.",
+                            accentColor = MintSecondary
+                        )
                         if (activePhoto != null) {
                             val hasRealUrl = activePhoto.imageUrl.isNotBlank()
                             Surface(
@@ -358,7 +369,7 @@ fun CourtFullEvidenceArchiveCard(
                                             backgroundColor = Color.Black.copy(alpha = 0.72f)
                                         )
                                         StatusChip(
-                                            text = if (hasRealUrl) "실사 연결됨" else "가이드 샘플 · 실사 첨부 권장",
+                                            text = if (hasRealUrl) "실사 연결됨" else "URL 확인 필요",
                                             textColor = if (hasRealUrl) MintSecondary else TistoryAmber,
                                             backgroundColor = if (hasRealUrl) EmeraldContainer else AmberContainer
                                         )
@@ -418,22 +429,18 @@ fun CourtFullEvidenceArchiveCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                if (onAttachPhotoUri != null) {
+                                if (onRefreshCourtEvidence != null) {
                                     OutlinedButton(
-                                        onClick = {
-                                            photoPickerLauncher.launch(
-                                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                            )
-                                        },
+                                        onClick = onRefreshCourtEvidence,
                                         modifier = Modifier
                                             .weight(1f)
                                             .height(48.dp)
-                                            .testTag("btn_attach_court_photo"),
+                                            .testTag("btn_refresh_court_evidence"),
                                         border = BorderStroke(1.dp, EmeraldPrimary)
                                     ) {
-                                        Icon(Icons.Filled.AddAPhoto, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(16.dp))
+                                        Icon(Icons.Filled.CloudSync, contentDescription = "법원 자료 새로 불러오기", tint = EmeraldPrimary, modifier = Modifier.size(16.dp))
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("실사 첨부", color = MintSecondary, maxLines = 1)
+                                        Text("법원자료 갱신", color = MintSecondary, maxLines = 1)
                                     }
                                 }
                                 Button(
@@ -455,11 +462,58 @@ fun CourtFullEvidenceArchiveCard(
                                     Icon(Icons.Filled.ContentCopy, contentDescription = "사진 기록 캡션 복사", tint = MintSecondary)
                                 }
                             }
+                        } else {
+                            Surface(
+                                color = NavyBackground,
+                                shape = MaterialTheme.shapes.small,
+                                border = BorderStroke(1.dp, NavyBorder),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("empty_court_photos_card")
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "딱찰 서버에서 수신된 법원 현장 사진이 아직 없습니다.",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = TextPrimary
+                                    )
+                                    Text(
+                                        text = "가짜 샘플 이미지를 생성하지 않습니다. 직접 첨부할 필요 없이 아래 버튼이나 사건번호 조회를 눌러 법원 제공 사진·현황조사서를 모두 가져오세요.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                    if (onRefreshCourtEvidence != null) {
+                                        Button(
+                                            onClick = onRefreshCourtEvidence,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp)
+                                                .testTag("btn_refresh_court_evidence"),
+                                            colors = ButtonDefaults.buttonColors(
+                                                containerColor = EmeraldPrimary,
+                                                contentColor = NavyBackground
+                                            )
+                                        ) {
+                                            Icon(Icons.Filled.CloudSync, contentDescription = "법원 제공 자료 불러오기", modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("법원·딱찰 서버 제공자료 전체 불러오기", fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
                     3 -> {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            EasyMenuGuideStrip(
+                                icon = Icons.Filled.DirectionsWalk,
+                                easyGuide = "법원 현황조사서 방문 기록과 현장 임장·관리실 확인 이력이 블로그 원고에 자동 반영됩니다.",
+                                accentColor = CloudflareSky
+                            )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -562,36 +616,54 @@ fun CourtFullEvidenceArchiveCard(
                                 }
                             }
 
-                            archive.visitRecords.forEach { visit ->
+                            if (archive.visitRecords.isEmpty()) {
                                 Surface(
                                     color = NavyBackground,
                                     shape = MaterialTheme.shapes.small,
                                     border = BorderStroke(1.dp, NavyBorder),
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("empty_court_visits_card")
                                 ) {
-                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Filled.DirectionsWalk, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text(visit.visitRound, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                                    Text(
+                                        text = "수신된 법원 현황조사·임장 방문기록이 없습니다. '+ 방문기록 추가'로 현장 확인 내용을 등록하세요.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextSecondary,
+                                        modifier = Modifier.padding(12.dp)
+                                    )
+                                }
+                            } else {
+                                archive.visitRecords.forEach { visit ->
+                                    Surface(
+                                        color = NavyBackground,
+                                        shape = MaterialTheme.shapes.small,
+                                        border = BorderStroke(1.dp, NavyBorder),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Filled.DirectionsWalk, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(visit.visitRound, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                                                }
+                                                StatusChip(
+                                                    text = visit.source.badgeText,
+                                                    textColor = if (visit.source == VisitRecordSource.FIELD_IMJANG) MintSecondary else CloudflareSky,
+                                                    backgroundColor = if (visit.source == VisitRecordSource.FIELD_IMJANG) EmeraldContainer else CloudflareContainer
+                                                )
                                             }
-                                            StatusChip(
-                                                text = visit.source.badgeText,
-                                                textColor = if (visit.source == VisitRecordSource.FIELD_IMJANG) MintSecondary else CloudflareSky,
-                                                backgroundColor = if (visit.source == VisitRecordSource.FIELD_IMJANG) EmeraldContainer else CloudflareContainer
+                                            Text(
+                                                text = "방문일 ${visit.visitedAt} · ${visit.visitorLabel} · ${visit.occupancyStatus}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TistoryAmber
                                             )
+                                            Text(visit.findingsNote, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         }
-                                        Text(
-                                            text = "방문일 ${visit.visitedAt} · ${visit.visitorLabel} · ${visit.occupancyStatus}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = TistoryAmber
-                                        )
-                                        Text(visit.findingsNote, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                     }
                                 }
                             }
@@ -600,32 +672,136 @@ fun CourtFullEvidenceArchiveCard(
 
                     1 -> {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            archive.documents.forEach { doc ->
+                            EasyMenuGuideStrip(
+                                icon = Icons.Filled.Description,
+                                easyGuide = "법원 매각물건명세서·현황조사서·감정평가서 핵심 조항을 자동으로 요약해 보여줍니다.",
+                                accentColor = CloudflareSky
+                            )
+                            if (archive.documents.isEmpty()) {
                                 Surface(
                                     color = NavyBackground,
                                     shape = MaterialTheme.shapes.small,
                                     border = BorderStroke(1.dp, NavyBorder),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("empty_court_docs_card")
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "딱찰 서버에서 수신된 공식 문건(매각물건명세서·현황조사서·감정평가서)이 아직 없습니다.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                        if (onRefreshCourtEvidence != null) {
+                                            OutlinedButton(
+                                                onClick = onRefreshCourtEvidence,
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .height(48.dp),
+                                                border = BorderStroke(1.dp, CloudflareSky)
+                                            ) {
+                                                Icon(Icons.Filled.CloudSync, contentDescription = "법원 공식 문건 다시 불러오기", tint = CloudflareSky, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text("법원 공식 문건 다시 불러오기", color = CloudflareSky)
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                archive.documents.forEach { doc ->
+                                    Surface(
+                                        color = NavyBackground,
+                                        shape = MaterialTheme.shapes.small,
+                                        border = BorderStroke(1.dp, NavyBorder),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Icon(Icons.Filled.Description, contentDescription = null, tint = CloudflareSky, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(doc.docKind.title, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                                                }
+                                                StatusChip(text = doc.referenceNo, textColor = MintSecondary, backgroundColor = EmeraldContainer)
+                                            }
+                                            Text("${doc.issuer} · 기준일 ${doc.issuedDate}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                                            Text(doc.summaryHighlight, style = MaterialTheme.typography.bodySmall, color = MintSecondary, fontWeight = FontWeight.Medium)
+                                            doc.fullRecordLines.forEach { line ->
+                                                Text(line, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                            }
+                                            Text("유의사항: ${doc.riskFlagNote}", style = MaterialTheme.typography.labelSmall, color = TistoryAmber)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    4 -> {
+                        val sharp = archive.sharpAnalysis
+                        if (sharp != null) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                EasyMenuGuideStrip(
+                                    icon = Icons.Filled.Analytics,
+                                    easyGuide = "명세서·등기부·현황조사서·시세 4축을 교차 검증한 칼분석 리포트입니다. 블로그 원고에도 자동 삽입됩니다.",
+                                    accentColor = EmeraldPrimary
+                                )
+                                Surface(
+                                    color = NavySurfaceElevated,
+                                    shape = MaterialTheme.shapes.small,
+                                    border = BorderStroke(1.dp, EmeraldPrimary.copy(alpha = 0.65f)),
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Icon(Icons.Filled.Description, contentDescription = null, tint = CloudflareSky, modifier = Modifier.size(16.dp))
-                                                Spacer(modifier = Modifier.width(6.dp))
-                                                Text(doc.docKind.title, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(sharp.sharpGradeBadge, style = MaterialTheme.typography.titleSmall, color = EmeraldPrimary, fontWeight = FontWeight.Bold)
+                                        Text(sharp.executiveVerdict, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                        Text(sharp.authorityPromoHeadline, style = MaterialTheme.typography.labelSmall, color = MintSecondary)
+                                    }
+                                }
+                                sharp.checks.forEach { chk ->
+                                    Surface(
+                                        color = NavyBackground,
+                                        shape = MaterialTheme.shapes.small,
+                                        border = BorderStroke(1.dp, if (chk.isAlert) CrimsonAlert.copy(alpha = 0.65f) else NavyBorder),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(chk.axisTitle, style = MaterialTheme.typography.labelLarge, color = TextPrimary, modifier = Modifier.weight(1f))
+                                                StatusChip(
+                                                    text = chk.verdictBadge,
+                                                    textColor = if (chk.isAlert) CrimsonAlert else MintSecondary,
+                                                    backgroundColor = if (chk.isAlert) CrimsonContainer else EmeraldContainer
+                                                )
                                             }
-                                            StatusChip(text = doc.referenceNo, textColor = MintSecondary, backgroundColor = EmeraldContainer)
+                                            Text(chk.documentsCompared, style = MaterialTheme.typography.labelSmall, color = CloudflareSky)
+                                            Text(chk.findingDetail, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                            Text("실행 지침: ${chk.actionDirective}", style = MaterialTheme.typography.labelSmall, color = TistoryAmber)
                                         }
-                                        Text("${doc.issuer} · 기준일 ${doc.issuedDate}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-                                        Text(doc.summaryHighlight, style = MaterialTheme.typography.bodySmall, color = MintSecondary, fontWeight = FontWeight.Medium)
-                                        doc.fullRecordLines.forEach { line ->
-                                            Text(line, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                    }
+                                }
+                                Surface(
+                                    color = NavyBackground,
+                                    shape = MaterialTheme.shapes.small,
+                                    border = BorderStroke(1.dp, TistoryAmber.copy(alpha = 0.5f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("일반 입찰자가 놓치는 3대 급소", style = MaterialTheme.typography.labelLarge, color = TistoryAmber)
+                                        sharp.killerTrapPoints.forEach { trap ->
+                                            Text("• $trap", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         }
-                                        Text("유의사항: ${doc.riskFlagNote}", style = MaterialTheme.typography.labelSmall, color = TistoryAmber)
                                     }
                                 }
                             }
@@ -634,6 +810,11 @@ fun CourtFullEvidenceArchiveCard(
 
                     else -> {
                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            EasyMenuGuideStrip(
+                                icon = Icons.Filled.Gavel,
+                                easyGuide = "등기부 갑구(소유·압류)·을구(근저당·임차)에서 말소·인수 권리를 자동 분류해 보여줍니다.",
+                                accentColor = TistoryAmber
+                            )
                             Surface(
                                 color = NavySurfaceElevated,
                                 shape = MaterialTheme.shapes.small,
@@ -652,46 +833,54 @@ fun CourtFullEvidenceArchiveCard(
                             }
 
                             Text("갑구 (소유권 · 압류 · 경매개시) ${archive.registryGapGu.size}건", style = MaterialTheme.typography.labelLarge, color = CloudflareSky)
-                            archive.registryGapGu.forEach { node ->
-                                Surface(
-                                    color = NavyBackground,
-                                    shape = MaterialTheme.shapes.small,
-                                    border = BorderStroke(1.dp, NavyBorder),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text("[${node.rankOrder}] ${node.title}", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
-                                            StatusChip(text = node.statusBadge, textColor = MintSecondary, backgroundColor = EmeraldContainer)
+                            if (archive.registryGapGu.isEmpty()) {
+                                Text("수신된 갑구 등기 노드가 없습니다 (서버 등기부 파싱 대기).", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                            } else {
+                                archive.registryGapGu.forEach { node ->
+                                    Surface(
+                                        color = NavyBackground,
+                                        shape = MaterialTheme.shapes.small,
+                                        border = BorderStroke(1.dp, NavyBorder),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text("[${node.rankOrder}] ${node.title}", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
+                                                StatusChip(text = node.statusBadge, textColor = MintSecondary, backgroundColor = EmeraldContainer)
+                                            }
+                                            Text("등기일: ${node.registeredDate} · ${node.holderOrCreditor} · ${node.amountOrShare}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                                            Text(node.plainExplanation, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         }
-                                        Text("등기일: ${node.registeredDate} · ${node.holderOrCreditor} · ${node.amountOrShare}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-                                        Text(node.plainExplanation, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                     }
                                 }
                             }
                             Text("을구 · 임차 (근저당 · 전세 · 대항력) ${archive.registryEulGu.size}건", style = MaterialTheme.typography.labelLarge, color = TistoryAmber)
-                            archive.registryEulGu.forEach { node ->
-                                Surface(
-                                    color = NavyBackground,
-                                    shape = MaterialTheme.shapes.small,
-                                    border = BorderStroke(1.dp, NavyBorder),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text("[${node.rankOrder}] ${node.title}", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
-                                            StatusChip(text = node.statusBadge, textColor = TistoryAmber, backgroundColor = AmberContainer)
+                            if (archive.registryEulGu.isEmpty()) {
+                                Text("수신된 을구·임차 노드가 없습니다 (서버 등기부 파싱 대기).", style = MaterialTheme.typography.bodySmall, color = TextMuted)
+                            } else {
+                                archive.registryEulGu.forEach { node ->
+                                    Surface(
+                                        color = NavyBackground,
+                                        shape = MaterialTheme.shapes.small,
+                                        border = BorderStroke(1.dp, NavyBorder),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text("[${node.rankOrder}] ${node.title}", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
+                                                StatusChip(text = node.statusBadge, textColor = TistoryAmber, backgroundColor = AmberContainer)
+                                            }
+                                            Text("설정일: ${node.registeredDate} · ${node.holderOrCreditor} · ${node.amountOrShare}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                                            Text(node.plainExplanation, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                         }
-                                        Text("설정일: ${node.registeredDate} · ${node.holderOrCreditor} · ${node.amountOrShare}", style = MaterialTheme.typography.labelSmall, color = TextMuted)
-                                        Text(node.plainExplanation, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                                     }
                                 }
                             }

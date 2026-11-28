@@ -34,23 +34,32 @@ object LegalDoctrineVerifier {
 
         // 1. 말소기준권리 & 소멸/인수 판정 검증
         val baseDateValid = DATE_REGEX.matches(auction.baseRightDate.trim())
-        val divDateValid = DATE_REGEX.matches(auction.dividendDeadline.trim())
+        val trimmedDiv = auction.dividendDeadline.trim()
+        val divDateValid = trimmedDiv.isEmpty() || DATE_REGEX.matches(trimmedDiv)
         val baseCheckPassed = baseDateValid && divDateValid
+        val divMissingOnly = baseDateValid && trimmedDiv.isEmpty()
         checks += LegalDoctrineCheckItem(
             id = "legal-01",
             domain = LegalVerificationDomain.BASE_RIGHT_CANCELLATION,
             title = "말소기준권리일·배당요구종기 기준선 검증",
             statuteOrPrecedent = "민사집행법 제91조(인수주의·소멸주의)",
-            severity = if (baseCheckPassed) LegalVerificationSeverity.VERIFIED_PASS else LegalVerificationSeverity.CRITICAL_BLOCK,
+            severity = when {
+                !baseCheckPassed -> LegalVerificationSeverity.CRITICAL_BLOCK
+                divMissingOnly -> LegalVerificationSeverity.CAUTION_NOTE
+                else -> LegalVerificationSeverity.VERIFIED_PASS
+            },
             passed = baseCheckPassed,
             estimatedBuyerBurdenKrw = 0L,
-            findingDetail = if (baseCheckPassed) {
-                "말소기준권리(${auction.baseRightDate}) 및 배당요구종기(${auction.dividendDeadline}) 일자 유효 — 기준일 이후 후순위 담보·가압류 소멸 판정 일관됨"
-            } else {
-                "말소기준권리('${auction.baseRightDate}') 또는 배당종기('${auction.dividendDeadline}') 형식 누락 — 권리 소멸 판단 불가"
+            findingDetail = when {
+                !baseCheckPassed ->
+                    "말소기준권리('${auction.baseRightDate}') 또는 배당종기('${auction.dividendDeadline}') 형식 누락 — 권리 소멸 판단 불가"
+                divMissingOnly ->
+                    "말소기준권리(${auction.baseRightDate}) 일자 유효 · 배당요구종기 서버 미기재(매각물건명세서 원문 확인 권장)"
+                else ->
+                    "말소기준권리(${auction.baseRightDate}) 및 배당요구종기(${auction.dividendDeadline}) 일자 유효 — 기준일 이후 후순위 담보·가압류 소멸 판정 일관됨"
             },
             actionGuidance = if (baseCheckPassed) {
-                "최선순위 근저당·가압류 설정일보다 앞선 등기·전입 존재 여부만 최종 확인"
+                "최선순위 근저당·가압류 설정일보다 앞선 등기·전입 존재 여부 및 배당요구종기 도과 여부 최종 확인"
             } else {
                 "등기부등본 최선순위 담보·가압류 일자(YYYY-MM-DD)를 정확히 입력하세요."
             }

@@ -2,7 +2,6 @@ package com.example
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.example.data.SeoChecklistStore
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.SeoGuideEngine
 import com.example.model.SeoRuleCategory
 import com.example.model.SeoRulePriority
@@ -117,7 +116,7 @@ class SeoChecklistStoreTest {
             cronExpression = "0 * * * *",
             dailyPostLimit = 5
         )
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(safeConfig)
+        val slots = TestFixtures.sampleSlots(safeConfig)
         val defaults = SeoGuideEngine.defaultChecklistItems()
 
         val naverLinkItem = defaults.first { it.ruleCode == "NAVER_NO_DIRECT_URL" }

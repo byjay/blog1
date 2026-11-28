@@ -274,6 +274,19 @@ fun DdakchalStudioApp() {
                                 onRunPerfectDdakchalDiag = viewModel::runPerfectDdakchalServerDiagnostic,
                                 onRefreshNaverPublishStatus = viewModel::refreshNaverPublishStatuses,
                                 onSelectNaverWriteMode = viewModel::updateNaverWriteMode,
+                                onToggleAdminRegion = viewModel::toggleTodakAdminRegion,
+                                onSelectAdminCategory = viewModel::setTodakAdminCategory,
+                                onAdminSearchQueryChange = viewModel::setTodakAdminSearchQuery,
+                                onSelectAdminCrawlLimit = viewModel::setTodakAdminCrawlLimit,
+                                onSaveAdminInlineAuth = viewModel::applyInlineServerAuthAndSave,
+                                onDiscoverServerDb = viewModel::discoverTodakServerDb,
+                                onRunTodakCrawlOnly = viewModel::runTodakCrawlEngineOnly,
+                                onRunTodakFullPipeline = viewModel::runTodakFullAdminPipeline,
+                                onGenerateFromDbItem = viewModel::generatePostFromDiscoveredDbItem,
+                                onCaseLookupInputChange = viewModel::setTodakCaseLookupInput,
+                                onLookupCaseAndAutoPreview = viewModel::lookupCaseNumberFromTodakAndAutoPreview,
+                                onConsumeAutoPreview = viewModel::consumePendingAutoPreview,
+                                onOpenQaTab = { activeTab = StudioTab.QA_INSPECT },
                                 onRunAiEvalSelected = { viewModel.evaluateSlotWithAi30Criteria() },
                                 onTestBusanProfitableLand = viewModel::createAndEvaluateBusanProfitableLandTest,
                                 onTestLowScoreDraft = viewModel::createLowScoreDraftForAutoFixTest,
@@ -333,7 +346,10 @@ fun DdakchalStudioApp() {
                                 },
                                 onLegalStudyFilterChange = viewModel::setLegalStudyFilter,
                                 onAttachCourtPhoto = viewModel::attachCourtPhotoToSlot,
-                                onAddVisitRecord = viewModel::addFieldVisitRecord
+                                onAddVisitRecord = viewModel::addFieldVisitRecord,
+                                onRefreshCourtEvidence = { caseId ->
+                                    viewModel.lookupCaseNumberFromTodakAndAutoPreview(caseId, 2)
+                                }
                             )
                             StudioTab.TEMPLATES -> TemplatesAndRulesScreen(
                                 uiState = uiState,

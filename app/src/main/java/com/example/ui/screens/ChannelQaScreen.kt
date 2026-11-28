@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Comment
@@ -127,6 +128,7 @@ fun ChannelQaScreen(
     onLegalStudyFilterChange: (LegalStudyCategory?, String) -> Unit = { _, _ -> },
     onAttachCourtPhoto: (postId: String, shotOrder: Int, uriString: String) -> Unit = { _, _, _ -> },
     onAddVisitRecord: (postId: String, source: VisitRecordSource, visitedAt: String, occupancyStatus: String, findingsNote: String) -> Unit = { _, _, _, _, _ -> },
+    onRefreshCourtEvidence: (caseId: String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val selectedSlot = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }
@@ -174,8 +176,8 @@ fun ChannelQaScreen(
     val activeCourtArchive = uiState.activeCourtArchive?.takeIf {
         it.caseId == auction.caseId &&
             it.visitRecords.size >= selectedSlot.visitRecords.size
-    } ?: remember(auction.caseId, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords) {
-        CourtEvidenceRecorder.recordFullArchive(auction, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords)
+    } ?: remember(selectedSlot.postId, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords, selectedSlot.serverRegistryGapGu, selectedSlot.serverRegistryEulGu, selectedSlot.serverCourtDocuments) {
+        CourtEvidenceRecorder.recordFullArchiveForSlot(selectedSlot)
     }
 
     LazyColumn(
@@ -189,7 +191,9 @@ fun ChannelQaScreen(
         item {
             SectionHeader(
                 title = "정밀 물건분석 · 등기부 도식 · 3채널 QA 검수",
-                subtitle = "사건별 배당·세무·등기부 해부·임장 사진·모션 콘티 및 저품질 0% 교차 검증"
+                subtitle = "사건별 배당·세무·등기부 해부·임장 사진·모션 콘티 및 저품질 0% 교차 검증",
+                icon = Icons.AutoMirrored.Filled.FactCheck,
+                easyGuide = "법원 사진·등기부·공식 문건·4축 칼분석을 확인하고 네이버·티스토리·자체웹 원고 중복률(저품질)을 한눈에 점검합니다."
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(
@@ -231,6 +235,9 @@ fun ChannelQaScreen(
                 },
                 onAddVisitRecord = { source, visitedAt, occupancyStatus, findingsNote ->
                     onAddVisitRecord(selectedSlot.postId, source, visitedAt, occupancyStatus, findingsNote)
+                },
+                onRefreshCourtEvidence = {
+                    onRefreshCourtEvidence(auction.caseId)
                 }
             )
         }

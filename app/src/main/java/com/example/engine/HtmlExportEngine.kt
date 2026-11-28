@@ -29,14 +29,11 @@ object HtmlExportEngine {
         val cleanBodyHtml = sanitizeChannelBodyHtml(variant, config)
         val faqSectionHtml = buildGeoFaqHtmlSection(slot)
 
-        val archive = CourtEvidenceRecorder.recordFullArchive(
-            auction = case,
-            courtPhotoUrls = slot.courtPhotoUrls,
-            customVisitRecords = slot.visitRecords
-        )
+        val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
         val registryTemplate = RegistryInfographicEngine.buildTemplate(case)
         val allowImgUrl = variant.platform != ChannelPlatform.NAVER || config.enableExternalLinkNaver
 
+        val sharpSection = buildSharpAnalysisHtmlSection(archive)
         val photosSection = buildCourtPhotosHtmlSection(archive, allowExternalImg = allowImgUrl, localPhotoDataUris = emptyMap())
         val registrySection = buildRegistryHtmlSection(archive, registryTemplate)
         val visitSection = buildVisitLogsHtmlSection(archive)
@@ -88,6 +85,9 @@ object HtmlExportEngine {
             appendLine("    <section class=\"post-body\">")
             appendLine("      $cleanBodyHtml")
             appendLine("    </section>")
+            if (sharpSection.isNotBlank()) {
+                appendLine(sharpSection)
+            }
             appendLine(photosSection)
             appendLine(registrySection)
             appendLine(visitSection)
@@ -123,13 +123,10 @@ object HtmlExportEngine {
         val cleanBodyHtml = sanitizeChannelBodyHtml(variant, config)
         val faqSectionHtml = buildGeoFaqHtmlSection(slot)
 
-        val archive = CourtEvidenceRecorder.recordFullArchive(
-            auction = case,
-            courtPhotoUrls = slot.courtPhotoUrls,
-            customVisitRecords = slot.visitRecords
-        )
+        val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
         val registryTemplate = RegistryInfographicEngine.buildTemplate(case)
         val allowImgUrl = variant.platform != ChannelPlatform.NAVER || config.enableExternalLinkNaver
+        val sharpSection = buildSharpAnalysisHtmlSection(archive)
         val photosSection = buildCourtPhotosHtmlSection(archive, allowExternalImg = allowImgUrl, localPhotoDataUris = emptyMap())
         val registrySection = buildRegistryHtmlSection(archive, registryTemplate)
         val visitSection = buildVisitLogsHtmlSection(archive)
@@ -152,6 +149,9 @@ object HtmlExportEngine {
             appendLine("  <section class=\"post-body\">")
             appendLine("    $cleanBodyHtml")
             appendLine("  </section>")
+            if (sharpSection.isNotBlank()) {
+                appendLine(sharpSection)
+            }
             appendLine(photosSection)
             appendLine(registrySection)
             appendLine(visitSection)
@@ -186,11 +186,7 @@ object HtmlExportEngine {
     ): String {
         val case = slot.auctionCase
         val eval = evaluation ?: Article30PointEvaluator.evaluate(slot, config)
-        val archive = CourtEvidenceRecorder.recordFullArchive(
-            auction = case,
-            courtPhotoUrls = slot.courtPhotoUrls,
-            customVisitRecords = slot.visitRecords
-        )
+        val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
         val registryTemplate = RegistryInfographicEngine.buildTemplate(case)
         val appraisalText = QaVerificationEngine.formatKrwShort(case.appraisalPriceKrw)
         val minBidText = QaVerificationEngine.formatKrwShort(case.minBidPriceKrw)
@@ -204,6 +200,7 @@ object HtmlExportEngine {
             ChannelPlatform.CLOUDFLARE -> "#38BDF8"
         }
         val scoreColor = if (eval.eligibleForRegistration) "#059669" else "#D97706"
+        val sharpSection = buildSharpAnalysisHtmlSection(archive)
         val photosSection = buildCourtPhotosHtmlSection(
             archive = archive,
             allowExternalImg = true,
@@ -260,6 +257,9 @@ object HtmlExportEngine {
             appendLine("      <tr><th>점유 · 임차 현황</th><td>${escapeHtml(case.possessionSummary)} · ${escapeHtml(case.tenantSummary)}</td></tr>")
             appendLine("    </table>")
             appendLine("    <section class=\"post-body\">$cleanBodyHtml</section>")
+            if (sharpSection.isNotBlank()) {
+                appendLine(sharpSection)
+            }
             appendLine(photosSection)
             appendLine(registrySection)
             appendLine(visitSection)
@@ -326,6 +326,30 @@ object HtmlExportEngine {
         )
     }
 
+    private fun buildSharpAnalysisHtmlSection(archive: CourtFullArchiveRecord): String {
+        val sharp = archive.sharpAnalysis ?: return ""
+        return buildString {
+            appendLine("  <section class=\"sharp-court-analysis\" style=\"background:#f0fdf4;border:1px solid #10b981;border-radius:10px;padding:14px 16px;margin:18px 0;\">")
+            appendLine("    <h2>${escapeHtml(sharp.sharpGradeBadge)} (${escapeHtml(sharp.caseId)})</h2>")
+            appendLine("    <p style=\"margin:6px 0 10px;\"><strong>종합 칼판정:</strong> ${escapeHtml(sharp.executiveVerdict)}</p>")
+            appendLine("    <table class=\"metrics\">")
+            appendLine("      <tr><th>교차 대조 축</th><th>판정</th><th>법원 원문 정밀 소견</th></tr>")
+            sharp.checks.forEach { chk ->
+                val statusColor = if (chk.isAlert) "#b91c1c" else "#047857"
+                appendLine("      <tr><td><strong>${escapeHtml(chk.axisTitle)}</strong><br /><small>${escapeHtml(chk.documentsCompared)}</small></td><td style=\"color:$statusColor;font-weight:700;\">${escapeHtml(chk.verdictBadge)}</td><td>${escapeHtml(chk.findingDetail)}<br /><small style=\"color:#0f766e;\">실행: ${escapeHtml(chk.actionDirective)}</small></td></tr>")
+            }
+            appendLine("    </table>")
+            appendLine("    <div style=\"margin-top:10px;font-size:0.9rem;\">")
+            appendLine("      <strong>일반 입찰자가 놓치는 3대 급소:</strong>")
+            sharp.killerTrapPoints.forEach { trap ->
+                appendLine("      <p style=\"margin:4px 0;\">• ${escapeHtml(trap)}</p>")
+            }
+            appendLine("      <p style=\"margin:8px 0 0;color:#065f46;font-weight:600;\">${escapeHtml(sharp.authorityPromoHeadline)}</p>")
+            appendLine("    </div>")
+            appendLine("  </section>")
+        }.trimEnd()
+    }
+
     private fun buildCourtPhotosHtmlSection(
         archive: CourtFullArchiveRecord,
         allowExternalImg: Boolean,
@@ -333,25 +357,29 @@ object HtmlExportEngine {
     ): String {
         return buildString {
             appendLine("  <section class=\"court-photos\">")
-            appendLine("    <h2>법원 현장사진 · 임장 체크 5컷 (${escapeHtml(archive.caseId)})</h2>")
-            appendLine("    <div class=\"photo-grid\">")
-            archive.photos.forEach { photo ->
-                val dataUri = localPhotoDataUris[photo.shotOrder].orEmpty()
-                val urlCandidate = dataUri.ifBlank { photo.imageUrl }
-                val canRenderImg = urlCandidate.startsWith("data:image/", ignoreCase = true) ||
-                    (allowExternalImg && (urlCandidate.startsWith("https://", ignoreCase = true) || urlCandidate.startsWith("http://", ignoreCase = true)))
-                appendLine("      <div class=\"photo-card\">")
-                if (canRenderImg) {
-                    appendLine("        <img src=\"${escapeHtml(urlCandidate)}\" alt=\"${escapeHtml(photo.blogCaption)}\" />")
-                } else {
-                    appendLine("        <div class=\"photo-placeholder\"><strong>컷 #${photo.shotOrder} · ${escapeHtml(photo.courtSourceLabel)}</strong><br />화각: ${escapeHtml(photo.captureAngle)} (${escapeHtml(photo.exifStatusLabel)})</div>")
+            appendLine("    <h2>법원 현장사진 · 임장 실사 (${escapeHtml(archive.caseId)} · ${archive.photos.size}컷)</h2>")
+            if (archive.photos.isEmpty()) {
+                appendLine("    <div class=\"meta-summary\">딱찰 서버에서 수신된 법원 실사 사진이 아직 없습니다. 법원·딱찰 서버 재조회 후 자동 반영됩니다.</div>")
+            } else {
+                appendLine("    <div class=\"photo-grid\">")
+                archive.photos.forEach { photo ->
+                    val dataUri = localPhotoDataUris[photo.shotOrder].orEmpty()
+                    val urlCandidate = dataUri.ifBlank { photo.imageUrl }
+                    val canRenderImg = urlCandidate.startsWith("data:image/", ignoreCase = true) ||
+                        (allowExternalImg && (urlCandidate.startsWith("https://", ignoreCase = true) || urlCandidate.startsWith("http://", ignoreCase = true)))
+                    appendLine("      <div class=\"photo-card\">")
+                    if (canRenderImg) {
+                        appendLine("        <img src=\"${escapeHtml(urlCandidate)}\" alt=\"${escapeHtml(photo.blogCaption)}\" />")
+                    } else {
+                        appendLine("        <div class=\"photo-placeholder\"><strong>컷 #${photo.shotOrder} · ${escapeHtml(photo.courtSourceLabel)}</strong><br />화각: ${escapeHtml(photo.captureAngle)} (${escapeHtml(photo.exifStatusLabel)})</div>")
+                    }
+                    appendLine("        <strong>${photo.shotOrder}. ${escapeHtml(photo.title)}</strong><br />")
+                    appendLine("        <span>${escapeHtml(photo.observationNote)}</span><br />")
+                    appendLine("        <small style=\"color:#b45309;\">점검 포인트: ${escapeHtml(photo.redFlagCheck)}</small>")
+                    appendLine("      </div>")
                 }
-                appendLine("        <strong>${photo.shotOrder}. ${escapeHtml(photo.title)}</strong><br />")
-                appendLine("        <span>${escapeHtml(photo.observationNote)}</span><br />")
-                appendLine("        <small style=\"color:#b45309;\">점검 포인트: ${escapeHtml(photo.redFlagCheck)}</small>")
-                appendLine("      </div>")
+                appendLine("    </div>")
             }
-            appendLine("    </div>")
             appendLine("  </section>")
         }.trimEnd()
     }
@@ -370,11 +398,15 @@ object HtmlExportEngine {
             appendLine("    </div>")
             appendLine("    <table class=\"metrics\">")
             appendLine("      <tr><th>구분 · 순위</th><th>권리 내용 · 설정일</th><th>말소/인수 판정</th></tr>")
-            archive.registryGapGu.forEach { node ->
-                appendLine("      <tr><td>${escapeHtml(node.rankOrder)} (갑구)</td><td>${escapeHtml(node.title)} (${escapeHtml(node.registeredDate)})<br /><small>${escapeHtml(node.plainExplanation)}</small></td><td>${escapeHtml(node.statusBadge)}</td></tr>")
-            }
-            archive.registryEulGu.forEach { node ->
-                appendLine("      <tr><td>${escapeHtml(node.rankOrder)} (을구/임차)</td><td>${escapeHtml(node.title)} (${escapeHtml(node.registeredDate)})<br /><small>${escapeHtml(node.plainExplanation)}</small></td><td>${escapeHtml(node.statusBadge)}</td></tr>")
+            if (archive.registryGapGu.isEmpty() && archive.registryEulGu.isEmpty()) {
+                appendLine("      <tr><td colspan=\"3\">딱찰 서버에서 수신된 등기부등본 갑구·을구 상세 항목이 없습니다 (원문 대조 대기).</td></tr>")
+            } else {
+                archive.registryGapGu.forEach { node ->
+                    appendLine("      <tr><td>${escapeHtml(node.rankOrder)} (갑구)</td><td>${escapeHtml(node.title)} (${escapeHtml(node.registeredDate)})<br /><small>${escapeHtml(node.plainExplanation)}</small></td><td>${escapeHtml(node.statusBadge)}</td></tr>")
+                }
+                archive.registryEulGu.forEach { node ->
+                    appendLine("      <tr><td>${escapeHtml(node.rankOrder)} (을구/임차)</td><td>${escapeHtml(node.title)} (${escapeHtml(node.registeredDate)})<br /><small>${escapeHtml(node.plainExplanation)}</small></td><td>${escapeHtml(node.statusBadge)}</td></tr>")
+                }
             }
             appendLine("    </table>")
             appendLine("  </section>")
@@ -382,16 +414,19 @@ object HtmlExportEngine {
     }
 
     private fun buildVisitLogsHtmlSection(archive: CourtFullArchiveRecord): String {
-        if (archive.visitRecords.isEmpty()) return ""
         return buildString {
             appendLine("  <section class=\"visit-logs\">")
             appendLine("    <h2>법원 현황조사 방문기록 · 현장 임장 이력 (${archive.visitRecords.size}건)</h2>")
-            appendLine("    <table class=\"metrics\">")
-            appendLine("      <tr><th>회차 · 일자</th><th>조사 구분</th><th>점유상태 및 현장 확인 내용</th></tr>")
-            archive.visitRecords.forEach { visit ->
-                appendLine("      <tr><td>${escapeHtml(visit.visitRound)}<br /><small>${escapeHtml(visit.visitedAt)}</small></td><td>${escapeHtml(visit.source.label)}<br /><small>${escapeHtml(visit.visitorLabel)}</small></td><td><strong>${escapeHtml(visit.occupancyStatus)}</strong><br />${escapeHtml(visit.findingsNote)}</td></tr>")
+            if (archive.visitRecords.isEmpty()) {
+                appendLine("    <div class=\"meta-summary\">수신된 법원 현황조사 방문기록 및 현장 임장 이력이 없습니다.</div>")
+            } else {
+                appendLine("    <table class=\"metrics\">")
+                appendLine("      <tr><th>회차 · 일자</th><th>조사 구분</th><th>점유상태 및 현장 확인 내용</th></tr>")
+                archive.visitRecords.forEach { visit ->
+                    appendLine("      <tr><td>${escapeHtml(visit.visitRound)}<br /><small>${escapeHtml(visit.visitedAt)}</small></td><td>${escapeHtml(visit.source.label)}<br /><small>${escapeHtml(visit.visitorLabel)}</small></td><td><strong>${escapeHtml(visit.occupancyStatus)}</strong><br />${escapeHtml(visit.findingsNote)}</td></tr>")
+                }
+                appendLine("    </table>")
             }
-            appendLine("    </table>")
             appendLine("  </section>")
         }.trimEnd()
     }

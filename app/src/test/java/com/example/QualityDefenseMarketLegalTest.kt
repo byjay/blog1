@@ -6,7 +6,6 @@ import com.example.data.NaverRealEstateApiClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
 import com.example.engine.Article30PointEvaluator
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.LegalDoctrineVerifier
 import com.example.engine.NearbyMarketEngine
 import com.example.engine.QaVerificationEngine
@@ -72,7 +71,7 @@ class QualityDefenseMarketLegalTest {
 
     @Test
     fun qualityDefenseEngine_detectsAndReplacesAllAiPatternsEmojisSpamUrlsAndPii() {
-        val baseAuction = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig()).first().auctionCase
+        val baseAuction = TestFixtures.sampleSlots(ServerAutomationConfig()).first().auctionCase
         val rawTitle = "[급매추천] ${baseAuction.caseId} 오늘의 경매 🔥"
         val rawBody = """
             오늘 살펴볼 물건은 채무자 김철수 소유 아파트입니다.
@@ -115,7 +114,7 @@ class QualityDefenseMarketLegalTest {
     @Test
     fun legalDoctrineVerifier_catchesContradictionsAndBlocksQaPass() {
         val cfg = ServerAutomationConfig()
-        val baseSlot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg).first()
+        val baseSlot = TestFixtures.sampleSlots(cfg).first()
 
         // 1. Clean default cases must pass 6-point legal doctrine check
         val cleanLegal = LegalDoctrineVerifier.verify(baseSlot.auctionCase)
@@ -144,7 +143,7 @@ class QualityDefenseMarketLegalTest {
         assertFalse("QA gate must block when legalDoctrinePassed is false", blockedQa.overallPassed)
 
         // 3. Post-seizure lien on factory case must recognize buyer immunity (pass, 0 burden)
-        val factoryCase = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg)
+        val factoryCase = TestFixtures.sampleSlots(cfg)
             .first { it.auctionCase.propertyType == PropertyType.FACTORY_SPECIAL }.auctionCase
         val factoryLegal = LegalDoctrineVerifier.verify(factoryCase)
         assertTrue(factoryLegal.overallPassed)
@@ -155,7 +154,7 @@ class QualityDefenseMarketLegalTest {
     @Test
     fun naverMarketEngine_andApiClient_recalculateBidsWithLiveResponsesAndHandleErrorsHonestly() = runTest(testDispatcher) {
         val cfg = ServerAutomationConfig()
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg).first()
+        val slot = TestFixtures.sampleSlots(cfg).first()
         val auction = slot.auctionCase
 
         // 1. Live dual-source interceptor (Naver Local + Blog + m.land.naver.com)
@@ -238,18 +237,38 @@ class QualityDefenseMarketLegalTest {
             aiAdvisor = offlineAdvisor,
             naverApiClient = liveClient
         )
-        vm.fetchNearbyMarketAndRebid(slot.postId)
+        vm.addCustomCrawledPropertyAndSchedule(
+            caseId = auction.caseId,
+            courtName = auction.courtName,
+            address = auction.address,
+            propertyType = auction.propertyType,
+            appraisalManWon = auction.appraisalPriceKrw / 10_000L,
+            minBidManWon = auction.minBidPriceKrw / 10_000L,
+            baseRightDate = auction.baseRightDate,
+            assumedRights = auction.assumedRightsText,
+            publishDate = "2026-11-24"
+        )
+        val liveSlot = vm.uiState.value.slots.first()
+        vm.fetchNearbyMarketAndRebid(liveSlot.postId)
         val updatedMarket = vm.uiState.value.marketAnalysisByCaseId[auction.caseId]
         assertNotNull(updatedMarket)
         assertEquals(MarketApiSourceStatus.LIVE_FULL, updatedMarket!!.status)
         assertEquals(340_000_000L, updatedMarket.urgentAskMinKrw)
 
-        // Sabotage a draft and confirm Quality Defense ViewModel method cleans it back to >= 95
-        vm.createLowScoreDraftForAutoFixTest()
-        val draftSlot = vm.uiState.value.slots.first()
-        assertTrue(draftSlot.qaReport.qualityDefenseFlagsCount > 0)
-        vm.applyQualityDefenseToSlot(draftSlot.postId)
-        val cleanedSlot = vm.uiState.value.slots.first { it.postId == draftSlot.postId }
+        // Confirm Quality Defense cleans a sabotaged slot and keeps live ViewModel slot >= 95
+        val badVariant = liveSlot.variants[ChannelPlatform.NAVER]!!.copy(
+            title = "[급매] ${auction.caseId} 🔥",
+            bodyText = "■ Q1. 알아보겠습니다 https://spam.example.com"
+        )
+        val (defendedSlot, defenseReport) = QualityDefenseEngine.defendSlot(
+            liveSlot.copy(variants = liveSlot.variants + (ChannelPlatform.NAVER to badVariant)),
+            cfg
+        )
+        assertTrue(defenseReport.totalHitsCount > 0)
+        assertEquals(0, defendedSlot.qaReport.qualityDefenseFlagsCount)
+
+        vm.applyQualityDefenseToSlot(liveSlot.postId)
+        val cleanedSlot = vm.uiState.value.slots.first { it.postId == liveSlot.postId }
         assertEquals(0, cleanedSlot.qaReport.qualityDefenseFlagsCount)
         val evalAfterDefense = Article30PointEvaluator.evaluate(cleanedSlot, cfg)
         assertTrue("Expected >= 95 after Quality Defense, got ${evalAfterDefense.totalScore}", evalAfterDefense.totalScore >= 95)

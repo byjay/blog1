@@ -10,7 +10,6 @@ import com.example.data.NaverRealEstateApiClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
 import com.example.engine.Article30PointEvaluator
-import com.example.engine.DefaultSpecDataFactory
 import com.example.model.AiEvaluationReport
 import com.example.model.ChannelPlatform
 import com.example.model.GeneratedPostSlot
@@ -373,7 +372,7 @@ class DdakchalIntegrationAndChartsTest {
             api = CloudflareAndDdakchalApi(ioDispatcher = testDispatcher),
             postWarehouseStore = createWarehouseStore(this)
         )
-        val baseSlots = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig())
+        val baseSlots = TestFixtures.sampleSlots(ServerAutomationConfig())
         val customSlots = listOf(
             baseSlots[0].copy(
                 postId = "p-1",

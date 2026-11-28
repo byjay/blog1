@@ -7,12 +7,12 @@ import com.example.data.BlogAutomationRepository
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
 import com.example.engine.CourtEvidenceRecorder
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.HtmlExportEngine
 import com.example.model.ChannelPlatform
 import com.example.model.FieldVisitRecord
 import com.example.model.GeneratedPostSlot
 import com.example.model.ProFunnelConfig
+import com.example.model.PropertyType
 import com.example.model.ServerAutomationConfig
 import com.example.model.VisitRecordSource
 import com.example.ui.StudioViewModel
@@ -80,7 +80,7 @@ class CourtEvidencePreviewAndPublishTest {
 
     @Test
     fun `CourtEvidenceRecorder binds real photo URLs and generates sanitized court and field visit records`() {
-        val auction = CourtEvidenceRecorder.findProfitableBusanLandUnder50M().first()
+        val auction = TestFixtures.sampleBusanLands().first()
         val photoUrls = listOf(
             "https://cdn.ddakchal.pages.dev/photos/cut1.jpg",
             "https://cdn.ddakchal.pages.dev/photos/cut2.jpg"
@@ -98,16 +98,19 @@ class CourtEvidencePreviewAndPublishTest {
         val archive = CourtEvidenceRecorder.recordFullArchive(
             auction = auction,
             courtPhotoUrls = photoUrls,
-            customVisitRecords = listOf(customVisit)
+            customVisitRecords = listOf(customVisit),
+            serverGapGu = TestFixtures.sampleGapGu(auction.caseId, auction.courtName),
+            serverEulGu = TestFixtures.sampleEulGu(auction.caseId, auction.baseRightDate),
+            serverDocuments = TestFixtures.sampleDocuments(auction.caseId, auction.courtName)
         )
 
-        assertEquals(5, archive.photos.size)
+        // Strictly preserves real photo URLs without synthetic padding
+        assertEquals(2, archive.photos.size)
         assertEquals("https://cdn.ddakchal.pages.dev/photos/cut1.jpg", archive.photos[0].imageUrl)
         assertEquals("https://cdn.ddakchal.pages.dev/photos/cut2.jpg", archive.photos[1].imageUrl)
-        assertEquals("", archive.photos[2].imageUrl)
 
-        // Default 4 court/survey/mgmt/imjang visits + 1 custom visit = 5 total
-        assertEquals(5, archive.visitRecords.size)
+        // Strictly preserves real visits without fake defaults
+        assertEquals(1, archive.visitRecords.size)
         assertEquals("custom-visit-1", archive.visitRecords.first().visitId)
         assertFalse(archive.visitRecords.first().findingsNote.contains("010-1234-5678"))
         assertTrue(archive.registryGapGu.isNotEmpty())
@@ -117,7 +120,7 @@ class CourtEvidencePreviewAndPublishTest {
     @Test
     fun `HtmlExportEngine embeds court photos, registry tables, and visit logs while respecting Naver link policy`() {
         val config = ServerAutomationConfig(enableExternalLinkNaver = false)
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(config).first().copy(
+        val slot = TestFixtures.sampleSlots(config).first().copy(
             courtPhotoUrls = listOf("https://r2.aution.codeb.app/case/photo1.webp"),
             visitRecords = listOf(
                 FieldVisitRecord(
@@ -154,7 +157,7 @@ class CourtEvidencePreviewAndPublishTest {
             slot = slot,
             variant = nvVariant,
             config = config,
-            localPhotoDataUris = mapOf(2 to "data:image/jpeg;base64,QUJD")
+            localPhotoDataUris = mapOf(1 to "data:image/jpeg;base64,QUJD")
         )
         assertTrue(previewHtml.contains("품질"))
         assertTrue(previewHtml.contains("data:image/jpeg;base64,QUJD"))
@@ -163,7 +166,7 @@ class CourtEvidencePreviewAndPublishTest {
     }
 
     @Test
-    fun `StudioViewModel attachCourtPhotoToSlot and addFieldVisitRecord update slot and activeCourtArchive cleanly`() = runTest {
+    fun `StudioViewModel attachCourtPhotoToSlot and addFieldVisitRecord update slot and activeCourtArchive cleanly`() = runTest(testDispatcher) {
         val repo = BlogAutomationRepository(
             configStore = createConfigStore(this),
             postWarehouseStore = createWarehouseStore(this)
@@ -173,6 +176,17 @@ class CourtEvidencePreviewAndPublishTest {
             aiAdvisor = offlineAdvisor
         )
 
+        viewModel.addCustomCrawledPropertyAndSchedule(
+            caseId = "2025타경6297",
+            courtName = "부산지방법원 동부지원",
+            address = "부산광역시 기장군 정관읍 모전리 100",
+            propertyType = PropertyType.APT_OFFICETEL,
+            appraisalManWon = 42_000L,
+            minBidManWon = 26_880L,
+            baseRightDate = "2020-05-14",
+            assumedRights = "말소기준권리 이후 후순위 소멸",
+            publishDate = "2026-11-25"
+        )
         val firstSlot = viewModel.uiState.value.slots.first()
         viewModel.selectSlot(firstSlot.postId)
 
@@ -197,9 +211,10 @@ class CourtEvidencePreviewAndPublishTest {
             "content://media/picker/0/com.android.providers.media.photopicker/media/1001",
             updatedSlot.courtPhotoUrls[1]
         )
-        assertEquals(
-            "content://media/picker/0/com.android.providers.media.photopicker/media/1001",
-            archive!!.photos[1].imageUrl
+        assertTrue(
+            archive!!.photos.any {
+                it.imageUrl == "content://media/picker/0/com.android.providers.media.photopicker/media/1001"
+            }
         )
         assertEquals(1, updatedSlot.visitRecords.size)
         assertTrue(archive.visitRecords.any { it.findingsNote.contains("장기수선충당금 정상") })

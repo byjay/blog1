@@ -2,8 +2,11 @@ package com.example.data
 
 import com.example.engine.BoilerplateAndTemplateEngine
 import com.example.engine.DefaultSpecDataFactory
+import com.example.engine.HtmlExportEngine
 import com.example.engine.QaVerificationEngine
 import com.example.engine.QualityDefenseEngine
+import com.example.model.AdminPipelineStageStatus
+import com.example.model.AdminPipelineStepLog
 import com.example.model.AuctionCaseIntel
 import com.example.model.ChannelPlatform
 import com.example.model.ChannelPublishStat
@@ -27,10 +30,18 @@ import com.example.model.PropertyType
 import com.example.model.PublishLogEntry
 import com.example.model.QueueAnalyticsSummary
 import com.example.model.ServerAutomationConfig
+import com.example.model.ServerDbDiscoveredItem
+import com.example.model.ServerDbTableInfo
 import com.example.model.VisitRecordSource
 import com.example.data.DdakchalRetrofitClientFactory.Companion.toDomainRecord
+import com.example.engine.PrivacySanitizerEngine
+import com.example.model.CourtDocKind
+import com.example.model.CourtDocumentRecord
 import com.example.model.DdakchalQueueItemRecord
 import com.example.model.QueueSyncResult
+import com.example.model.RegistryNodeTone
+import com.example.model.RegistrySection
+import com.example.model.RegistryVisualNode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -54,6 +65,35 @@ data class DdakchalSyncOutcome<T>(
     val httpStatusCode: Int = 0,
     val errorMessage: String? = null,
     val nextCursorSince: String? = null
+)
+
+data class ServerDbDiscoveryResult(
+    val tables: List<ServerDbTableInfo>,
+    val items: List<ServerDbDiscoveredItem>,
+    val d1TableNames: List<String>,
+    val triggerStatus: DdakchalTriggerStatusSnapshot?,
+    val stepLogs: List<AdminPipelineStepLog>,
+    val summaryMessage: String
+)
+
+data class TodakCrawlEngineRunResult(
+    val isSuccess: Boolean,
+    val items: List<ServerDbDiscoveredItem>,
+    val triggerStatus: DdakchalTriggerStatusSnapshot?,
+    val stepLogs: List<AdminPipelineStepLog>,
+    val httpStatusCode: Int,
+    val latencyMs: Long,
+    val summaryMessage: String
+)
+
+data class TodakCaseLookupResult(
+    val isSuccess: Boolean,
+    val normalizedCaseId: String,
+    val slot: GeneratedPostSlot? = null,
+    val stepLogs: List<AdminPipelineStepLog> = emptyList(),
+    val httpStatusCode: Int = 0,
+    val latencyMs: Long = 0L,
+    val message: String = ""
 )
 
 class BlogAutomationRepository(
@@ -410,6 +450,671 @@ class BlogAutomationRepository(
         return syncAnalysisFeedWithTelemetry(config, limit = limit.coerceAtLeast(10))
     }
 
+    /**
+     * 딱찰 서버 DB(/assets/feed, /analysis-feed, /assets/{key}, /triggers/status, /queue)와
+     * Cloudflare D1 테이블(sqlite_master)을 직접 탐색해 실데이터 레코드를 반환한다.
+     */
+    suspend fun inspectServerDatabases(
+        config: ServerAutomationConfig,
+        categoryFilter: String = "",
+        searchQuery: String = "",
+        limit: Int = 20
+    ): ServerDbDiscoveryResult {
+        val apiBase = config.ddakchalApiBase.trim().removeSuffix("/")
+        val token = config.crawlerSyncToken.trim()
+        val recentCorpus = configStore.getRecent7DayCorpus()
+        val tables = mutableListOf<ServerDbTableInfo>()
+        val stepLogs = mutableListOf<AdminPipelineStepLog>()
+        val discoveredByKey = linkedMapOf<String, ServerDbDiscoveredItem>()
+        val d1Tables = mutableListOf<String>()
+
+        fun addSlots(slots: List<GeneratedPostSlot>, origin: String) {
+            slots.forEach { slot ->
+                val dedup = slot.auctionCase.dedupKey.ifBlank { slot.auctionCase.caseId }
+                if (!discoveredByKey.containsKey(dedup)) {
+                    discoveredByKey[dedup] = ServerDbDiscoveredItem(
+                        recordId = slot.postId,
+                        dedupKey = dedup,
+                        caseId = slot.auctionCase.caseId,
+                        courtName = slot.auctionCase.courtName,
+                        address = slot.auctionCase.address,
+                        propertyType = slot.auctionCase.propertyType,
+                        appraisalKrw = slot.auctionCase.appraisalPriceKrw,
+                        minBidKrw = slot.auctionCase.minBidPriceKrw,
+                        photoCount = slot.courtPhotoUrls.count { it.isNotBlank() },
+                        visitCount = slot.visitRecords.size,
+                        hasAnalysisData = slot.ddakchalAnalysisData != null,
+                        sourceOrigin = origin,
+                        updatedAt = slot.serverUpdatedAt.ifBlank { slot.publishDate },
+                        slot = slot
+                    )
+                }
+            }
+        }
+
+        // 1) Optional Direct Case/Key Asset Lookup when search query looks specific
+        val cleanQuery = searchQuery.trim()
+        if (cleanQuery.isNotBlank()) {
+            val singleRes = api.fetchAssetByKey(
+                apiBase = apiBase,
+                syncToken = token,
+                keyOrCaseNo = cleanQuery,
+                refresh = false,
+                enableExternalLinkNaver = config.enableExternalLinkNaver
+            )
+            val parsedSingle = if (singleRes.isSuccess && singleRes.body.isNotBlank()) {
+                runCatching { parseSingleAssetJson(singleRes.body, config, recentCorpus) }.getOrNull()
+            } else null
+            if (parsedSingle != null) {
+                addSlots(listOf(parsedSingle), "DB /assets/$cleanQuery")
+            }
+            stepLogs += AdminPipelineStepLog(
+                stepIndex = 1,
+                title = "사건/키워드 단건 DB 조회",
+                endpoint = "/api/v1/blog/assets/$cleanQuery",
+                status = if (parsedSingle != null) AdminPipelineStageStatus.SUCCESS else AdminPipelineStageStatus.WARN,
+                httpCode = singleRes.statusCode,
+                latencyMs = singleRes.latencyMs,
+                detail = if (parsedSingle != null) {
+                    "단건 매칭 성공: ${parsedSingle.auctionCase.caseId}"
+                } else {
+                    formatHttpFailure("단건 조회", singleRes)
+                }
+            )
+        }
+
+        // 2) GET /api/v1/blog/assets/feed (Raw Crawler Asset DB)
+        val assetsFeedRes = api.fetchAssetsFeed(
+            apiBase = apiBase,
+            syncToken = token,
+            category = categoryFilter.ifBlank { null },
+            limit = limit.coerceIn(1, 50),
+            flush = true,
+            query = cleanQuery.ifBlank { null }
+        )
+        val assetsSlots = if (assetsFeedRes.isSuccess && assetsFeedRes.body.isNotBlank()) {
+            runCatching {
+                parseAuctionItemsFromJson(
+                    rawJson = assetsFeedRes.body,
+                    config = config,
+                    recentCorpus = recentCorpus,
+                    sourceLabel = "실서버 DB /assets/feed",
+                    allowDummyFallback = false
+                )
+            }.getOrDefault(emptyList())
+        } else emptyList()
+        addSlots(assetsSlots, "DB /assets/feed")
+        tables += ServerDbTableInfo(
+            sourceName = "딱찰 크롤러 자산 DB",
+            tableOrEndpoint = "/api/v1/blog/assets/feed",
+            rowCount = assetsSlots.size,
+            httpStatusCode = assetsFeedRes.statusCode,
+            sampleColumns = listOf("case_no", "auction_dedup_key", "photo_urls", "visit_records", "appraisal_krw"),
+            statusDetail = if (assetsFeedRes.isSuccess) "${assetsSlots.size}건 수신 (${assetsFeedRes.latencyMs}ms)" else formatHttpFailure("자산 피드 DB", assetsFeedRes)
+        )
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = stepLogs.size + 1,
+            title = "딱찰 자산 DB 탐색 (/assets/feed)",
+            endpoint = "/api/v1/blog/assets/feed",
+            status = when {
+                assetsFeedRes.isSuccess && assetsSlots.isNotEmpty() -> AdminPipelineStageStatus.SUCCESS
+                assetsFeedRes.isSuccess -> AdminPipelineStageStatus.WARN
+                else -> AdminPipelineStageStatus.ERROR
+            },
+            httpCode = assetsFeedRes.statusCode,
+            latencyMs = assetsFeedRes.latencyMs,
+            detail = if (assetsFeedRes.isSuccess) "자산 DB ${assetsSlots.size}건 로드" else formatHttpFailure("자산 DB", assetsFeedRes)
+        )
+
+        // 3) GET /api/v1/blog/analysis-feed (Analyzed Blog Intelligence DB)
+        val analysisRes = api.fetchAnalysisFeed(
+            apiBase = apiBase,
+            syncToken = token,
+            limit = limit.coerceIn(1, 30),
+            category = categoryFilter.ifBlank { null },
+            enableExternalLinkNaver = config.enableExternalLinkNaver
+        )
+        val analysisSlots = if (analysisRes.isSuccess && analysisRes.body.isNotBlank()) {
+            runCatching { parseAnalysisFeedJson(analysisRes.body, config, recentCorpus) }.getOrDefault(emptyList())
+        } else emptyList()
+        addSlots(analysisSlots, "DB /analysis-feed")
+        tables += ServerDbTableInfo(
+            sourceName = "딱찰 분석 리포트 DB",
+            tableOrEndpoint = "/api/v1/blog/analysis-feed",
+            rowCount = analysisSlots.size,
+            httpStatusCode = analysisRes.statusCode,
+            sampleColumns = listOf("blog_analysis_data", "channelVariants", "min_bid_krw", "base_right_date"),
+            statusDetail = if (analysisRes.isSuccess) "${analysisSlots.size}건 수신 (${analysisRes.latencyMs}ms)" else formatHttpFailure("분석 피드 DB", analysisRes)
+        )
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = stepLogs.size + 1,
+            title = "딱찰 분석 DB 탐색 (/analysis-feed)",
+            endpoint = "/api/v1/blog/analysis-feed",
+            status = when {
+                analysisRes.isSuccess && analysisSlots.isNotEmpty() -> AdminPipelineStageStatus.SUCCESS
+                analysisRes.isSuccess -> AdminPipelineStageStatus.WARN
+                else -> AdminPipelineStageStatus.ERROR
+            },
+            httpCode = analysisRes.statusCode,
+            latencyMs = analysisRes.latencyMs,
+            detail = if (analysisRes.isSuccess) "분석 DB ${analysisSlots.size}건 로드" else formatHttpFailure("분석 DB", analysisRes)
+        )
+
+        // 4) GET /api/v1/blog/triggers/status
+        val triggerOutcome = fetchTriggerStatusWithTelemetry(config)
+        val triggerSnapshot = triggerOutcome.data
+        tables += ServerDbTableInfo(
+            sourceName = "아웃박스 트리거·스냅샷 큐",
+            tableOrEndpoint = "/api/v1/blog/triggers/status",
+            rowCount = triggerSnapshot?.snapshotsCount ?: 0,
+            httpStatusCode = triggerOutcome.httpStatusCode,
+            sampleColumns = listOf("pending", "processed", "snapshotsCount", "todayQueueCount"),
+            statusDetail = if (triggerSnapshot != null) {
+                "대기 ${triggerSnapshot.pendingCount} · 처리 ${triggerSnapshot.processedCount} · 스냅샷 ${triggerSnapshot.snapshotsCount} · 금일큐 ${triggerSnapshot.todayQueueCount}"
+            } else {
+                triggerOutcome.errorMessage ?: "트리거 상태 확인 실패"
+            }
+        )
+
+        // 5) Cloudflare D1 Table Discovery (sqlite_master) when CF keys are configured
+        if (config.cfAccountId.isNotBlank() && config.cfD1DatabaseId.isNotBlank() && config.cfApiToken.isNotBlank()) {
+            val schemaRes = api.executeCloudflareD1Query(
+                accountId = config.cfAccountId,
+                databaseId = config.cfD1DatabaseId,
+                apiToken = config.cfApiToken,
+                sql = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+            )
+            if (schemaRes.isSuccess && schemaRes.body.isNotBlank()) {
+                runCatching {
+                    val root = JSONObject(schemaRes.body)
+                    val arr = root.optJSONArray("result")?.optJSONObject(0)?.optJSONArray("results") ?: JSONArray()
+                    val safeNameRegex = Regex("^[A-Za-z0-9_]+$")
+                    for (i in 0 until arr.length()) {
+                        val tName = arr.optJSONObject(i)?.optString("name").orEmpty().trim()
+                        if (tName.isNotBlank() && safeNameRegex.matches(tName)) {
+                            d1Tables += tName
+                            val countRes = api.executeCloudflareD1Query(
+                                accountId = config.cfAccountId,
+                                databaseId = config.cfD1DatabaseId,
+                                apiToken = config.cfApiToken,
+                                sql = "SELECT COUNT(*) AS cnt FROM $tName;"
+                            )
+                            val rowCnt = if (countRes.isSuccess) {
+                                runCatching {
+                                    JSONObject(countRes.body)
+                                        .optJSONArray("result")?.optJSONObject(0)
+                                        ?.optJSONArray("results")?.optJSONObject(0)
+                                        ?.optInt("cnt", 0) ?: 0
+                                }.getOrDefault(0)
+                            } else 0
+                            tables += ServerDbTableInfo(
+                                sourceName = "Cloudflare D1 테이블",
+                                tableOrEndpoint = "d1://$tName",
+                                rowCount = rowCnt,
+                                httpStatusCode = countRes.statusCode,
+                                sampleColumns = listOf(tName),
+                                statusDetail = "D1 실테이블 ${rowCnt}행 확인"
+                            )
+                        }
+                    }
+                }
+            }
+            stepLogs += AdminPipelineStepLog(
+                stepIndex = stepLogs.size + 1,
+                title = "Cloudflare D1 DB 테이블 탐색",
+                endpoint = "D1:${config.cfD1DatabaseId.take(8)}…",
+                status = if (schemaRes.isSuccess) AdminPipelineStageStatus.SUCCESS else AdminPipelineStageStatus.ERROR,
+                httpCode = schemaRes.statusCode,
+                latencyMs = schemaRes.latencyMs,
+                detail = if (schemaRes.isSuccess) "D1 테이블 ${d1Tables.size}개 발견 (${d1Tables.joinToString()})" else formatHttpFailure("D1 조회", schemaRes)
+            )
+        }
+
+        // Apply optional client-side query / category filtering
+        val filteredItems = discoveredByKey.values.filter { item ->
+            val catOk = categoryFilter.isBlank() ||
+                item.propertyType.code.equals(categoryFilter, ignoreCase = true) ||
+                item.propertyType.blogCategory.contains(categoryFilter, ignoreCase = true)
+            val qOk = cleanQuery.isBlank() ||
+                item.caseId.contains(cleanQuery, ignoreCase = true) ||
+                item.address.contains(cleanQuery, ignoreCase = true) ||
+                item.courtName.contains(cleanQuery, ignoreCase = true) ||
+                item.dedupKey.contains(cleanQuery, ignoreCase = true)
+            catOk && qOk
+        }
+
+        val anyFeedOk = assetsFeedRes.isSuccess || analysisRes.isSuccess || d1Tables.isNotEmpty()
+        val summary = when {
+            !anyFeedOk && token.isBlank() -> "CRAWLER_SYNC_TOKEN 미입력 또는 인증 필요 — 관리자 키 입력 후 DB 조회를 실행해 주세요."
+            !anyFeedOk -> "서버 DB 접근 실패 (자산 HTTP ${assetsFeedRes.statusCode} · 분석 HTTP ${analysisRes.statusCode}) — 토큰·엔드포인트 확인 필요"
+            filteredItems.isEmpty() -> "DB 연결 성공 (테이블 ${tables.size}개) · 조건에 맞는 레코드 0건"
+            else -> "서버 DB 탐색 완료: 테이블/피드 ${tables.size}개 · 실데이터 ${filteredItems.size}건 확보"
+        }
+
+        return ServerDbDiscoveryResult(
+            tables = tables,
+            items = filteredItems,
+            d1TableNames = d1Tables,
+            triggerStatus = triggerSnapshot,
+            stepLogs = stepLogs,
+            summaryMessage = summary
+        )
+    }
+
+    /**
+     * 딱찰 크롤링 엔진(POST /crawl-and-sync + POST /triggers/run)을 실제 가동하고
+     * 신규 크롤링된 매물을 DB에서 회수한다.
+     */
+    suspend fun runTodakCrawlEngineWithSteps(
+        config: ServerAutomationConfig,
+        regions: List<String>,
+        categoryFilter: String = "",
+        limit: Int = 5
+    ): TodakCrawlEngineRunResult {
+        val apiBase = config.ddakchalApiBase.trim().removeSuffix("/")
+        val token = config.crawlerSyncToken.trim()
+        val recentCorpus = configStore.getRecent7DayCorpus()
+        val stepLogs = mutableListOf<AdminPipelineStepLog>()
+        val itemsByKey = linkedMapOf<String, ServerDbDiscoveredItem>()
+
+        // Step A: POST /api/v1/blog/crawl-and-sync (Live Crawler Execution)
+        val crawlRes = api.triggerCrawlAndSync(
+            apiBase = apiBase,
+            syncToken = token,
+            regions = regions,
+            runCrawl = true,
+            maxBatch = 15,
+            limit = limit.coerceIn(1, 20),
+            enableExternalLinkNaver = config.enableExternalLinkNaver
+        )
+        val directCrawledSlots = if (crawlRes.isSuccess && crawlRes.body.isNotBlank()) {
+            runCatching {
+                parseAuctionItemsFromJson(
+                    rawJson = crawlRes.body,
+                    config = config,
+                    recentCorpus = recentCorpus,
+                    sourceLabel = "실서버 /crawl-and-sync",
+                    allowDummyFallback = false
+                )
+            }.getOrDefault(emptyList())
+        } else emptyList()
+
+        directCrawledSlots.forEach { slot ->
+            val key = slot.auctionCase.dedupKey.ifBlank { slot.auctionCase.caseId }
+            itemsByKey[key] = ServerDbDiscoveredItem(
+                recordId = slot.postId,
+                dedupKey = key,
+                caseId = slot.auctionCase.caseId,
+                courtName = slot.auctionCase.courtName,
+                address = slot.auctionCase.address,
+                propertyType = slot.auctionCase.propertyType,
+                appraisalKrw = slot.auctionCase.appraisalPriceKrw,
+                minBidKrw = slot.auctionCase.minBidPriceKrw,
+                photoCount = slot.courtPhotoUrls.count { it.isNotBlank() },
+                visitCount = slot.visitRecords.size,
+                hasAnalysisData = slot.ddakchalAnalysisData != null,
+                sourceOrigin = "엔진 /crawl-and-sync",
+                updatedAt = slot.serverUpdatedAt.ifBlank { slot.publishDate },
+                slot = slot
+            )
+        }
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = 1,
+            title = "딱찰 크롤링 엔진 실행 (${regions.joinToString().ifBlank { "전국" }})",
+            endpoint = "/api/v1/blog/crawl-and-sync",
+            status = when {
+                crawlRes.isSuccess -> AdminPipelineStageStatus.SUCCESS
+                else -> AdminPipelineStageStatus.ERROR
+            },
+            httpCode = crawlRes.statusCode,
+            latencyMs = crawlRes.latencyMs,
+            detail = if (crawlRes.isSuccess) {
+                "크롤러 가동 성공 (HTTP ${crawlRes.statusCode}) · 즉시 반환 ${directCrawledSlots.size}건"
+            } else {
+                formatHttpFailure("크롤링 엔진", crawlRes)
+            }
+        )
+
+        // Step B: POST /api/v1/blog/triggers/run (Process Outbox Triggers into Analyzed Snapshots)
+        val triggerRunRes = api.runTriggers(
+            apiBase = apiBase,
+            syncToken = token,
+            maxBatch = 15,
+            autoFillDailyQueue = true,
+            enableExternalLinkNaver = config.enableExternalLinkNaver
+        )
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = 2,
+            title = "아웃박스 트리거·AI 스냅샷 생성",
+            endpoint = "/api/v1/blog/triggers/run",
+            status = if (triggerRunRes.isSuccess) AdminPipelineStageStatus.SUCCESS else AdminPipelineStageStatus.WARN,
+            httpCode = triggerRunRes.statusCode,
+            latencyMs = triggerRunRes.latencyMs,
+            detail = if (triggerRunRes.isSuccess) {
+                "트리거 배치 처리 완료 (HTTP ${triggerRunRes.statusCode})"
+            } else {
+                formatHttpFailure("트리거 처리", triggerRunRes)
+            }
+        )
+
+        // Step C: Fetch fresh records from /analysis-feed & /assets/feed after crawl
+        val feedOutcome = syncAnalysisFeedWithTelemetry(
+            config = config,
+            limit = limit.coerceAtLeast(10),
+            category = categoryFilter.ifBlank { null }
+        )
+        val feedSlots = feedOutcome.data.orEmpty()
+        feedSlots.forEach { slot ->
+            val key = slot.auctionCase.dedupKey.ifBlank { slot.auctionCase.caseId }
+            if (!itemsByKey.containsKey(key)) {
+                itemsByKey[key] = ServerDbDiscoveredItem(
+                    recordId = slot.postId,
+                    dedupKey = key,
+                    caseId = slot.auctionCase.caseId,
+                    courtName = slot.auctionCase.courtName,
+                    address = slot.auctionCase.address,
+                    propertyType = slot.auctionCase.propertyType,
+                    appraisalKrw = slot.auctionCase.appraisalPriceKrw,
+                    minBidKrw = slot.auctionCase.minBidPriceKrw,
+                    photoCount = slot.courtPhotoUrls.count { it.isNotBlank() },
+                    visitCount = slot.visitRecords.size,
+                    hasAnalysisData = slot.ddakchalAnalysisData != null,
+                    sourceOrigin = "신규 /analysis-feed",
+                    updatedAt = slot.serverUpdatedAt.ifBlank { slot.publishDate },
+                    slot = slot
+                )
+            }
+        }
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = 3,
+            title = "크롤링 후 최신 분석 피드 수거",
+            endpoint = "/api/v1/blog/analysis-feed",
+            status = when {
+                feedOutcome.isSuccess && feedSlots.isNotEmpty() -> AdminPipelineStageStatus.SUCCESS
+                feedOutcome.isSuccess -> AdminPipelineStageStatus.WARN
+                else -> AdminPipelineStageStatus.ERROR
+            },
+            httpCode = feedOutcome.httpStatusCode,
+            latencyMs = feedOutcome.latencyMs,
+            detail = if (feedOutcome.isSuccess) {
+                "최신 분석 피드 ${feedSlots.size}건 수거 완료"
+            } else {
+                feedOutcome.errorMessage ?: "피드 수거 실패"
+            }
+        )
+
+        val triggerSnapshot = fetchTriggerStatusWithTelemetry(config).data
+        val anyOk = crawlRes.isSuccess || feedOutcome.isSuccess
+        val totalItems = itemsByKey.values.toList()
+        val summary = if (anyOk) {
+            "크롤링 엔진 완료: 신규·분석 매물 ${totalItems.size}건 확보 (${crawlRes.latencyMs}ms)"
+        } else {
+            "크롤링 엔진 실행 실패: ${formatHttpFailure("crawl-and-sync", crawlRes)}"
+        }
+
+        return TodakCrawlEngineRunResult(
+            isSuccess = anyOk,
+            items = totalItems,
+            triggerStatus = triggerSnapshot,
+            stepLogs = stepLogs,
+            httpStatusCode = if (crawlRes.statusCode > 0) crawlRes.statusCode else feedOutcome.httpStatusCode,
+            latencyMs = crawlRes.latencyMs + triggerRunRes.latencyMs + feedOutcome.latencyMs,
+            summaryMessage = summary
+        )
+    }
+
+    fun normalizeCaseNumber(rawInput: String): String {
+        val compact = rawInput.trim().replace(Regex("\\s+"), "")
+        val match = Regex("""(\d{4}타경\d+)""").find(compact)
+        return match?.groupValues?.getOrNull(1) ?: compact
+    }
+
+    /**
+     * 사건번호(예: 2025타경6297) 입력 시 딱찰 서버에서 경매 사진, 등기부(갑구·을구),
+     * 법원 문서(매각물건명세서·현황조사서·감정평가서), 방문기록을 실시간 조회한다.
+     * 더미 데이터 폴백 없음 — 401/403/404 또는 0건 시 정확한 HTTP 오류를 그대로 반환한다.
+     */
+    suspend fun lookupCourtCaseFromTodakServer(
+        config: ServerAutomationConfig,
+        rawCaseInput: String
+    ): TodakCaseLookupResult {
+        val normalizedCase = normalizeCaseNumber(rawCaseInput)
+        if (normalizedCase.isBlank()) {
+            return TodakCaseLookupResult(
+                isSuccess = false,
+                normalizedCaseId = "",
+                message = "법원 사건번호를 입력해 주세요. (예: 2025타경6297)"
+            )
+        }
+        val apiBase = config.ddakchalApiBase.trim().removeSuffix("/")
+        val token = config.crawlerSyncToken.trim()
+        val recentCorpus = configStore.getRecent7DayCorpus()
+        val stepLogs = mutableListOf<AdminPipelineStepLog>()
+
+        // 1) GET /api/v1/blog/assets/{caseNo}?refresh=true
+        val byKeyRes = api.fetchAssetByKey(
+            apiBase = apiBase,
+            syncToken = token,
+            keyOrCaseNo = normalizedCase,
+            refresh = true,
+            enableExternalLinkNaver = config.enableExternalLinkNaver
+        )
+        var primarySlot: GeneratedPostSlot? = if (byKeyRes.isSuccess && byKeyRes.body.isNotBlank()) {
+            runCatching {
+                parseSingleAssetResponseToSlot(
+                    rawJson = byKeyRes.body,
+                    config = config,
+                    recentCorpus = recentCorpus,
+                    sourceLabel = "딱찰 사건조회 /assets/$normalizedCase"
+                )
+            }.getOrNull()
+        } else null
+
+        stepLogs += AdminPipelineStepLog(
+            stepIndex = 1,
+            title = "사건번호 단건 조회 (/assets/$normalizedCase)",
+            endpoint = "/api/v1/blog/assets/$normalizedCase?refresh=true",
+            status = when {
+                byKeyRes.isSuccess && primarySlot != null -> AdminPipelineStageStatus.SUCCESS
+                byKeyRes.isSuccess -> AdminPipelineStageStatus.WARN
+                else -> AdminPipelineStageStatus.ERROR
+            },
+            httpCode = byKeyRes.statusCode,
+            latencyMs = byKeyRes.latencyMs,
+            detail = if (primarySlot != null) {
+                "사진 ${primarySlot.courtPhotoUrls.size}건 · 방문 ${primarySlot.visitRecords.size}건 · 문건 ${primarySlot.serverCourtDocuments.size}종 · 등기 ${primarySlot.serverRegistryGapGu.size + primarySlot.serverRegistryEulGu.size}건 수신"
+            } else {
+                formatHttpFailure("단건 조회", byKeyRes)
+            }
+        )
+
+        var lastHttpCode = byKeyRes.statusCode
+        var totalLatency = byKeyRes.latencyMs
+
+        // 2) Complementary or fallback query via /api/v1/blog/assets/feed?q={caseNo}&flush=true
+        val needsFeedFallback = primarySlot == null ||
+            primarySlot.courtPhotoUrls.isEmpty() ||
+            primarySlot.visitRecords.isEmpty() ||
+            primarySlot.serverCourtDocuments.none { it.docKind == CourtDocKind.STATUS_SURVEY }
+
+        var feedMatchedSlot: GeneratedPostSlot? = null
+        if (needsFeedFallback) {
+            val feedRes = api.fetchAssetsFeed(
+                apiBase = apiBase,
+                syncToken = token,
+                limit = 20,
+                flush = true,
+                query = normalizedCase
+            )
+            totalLatency += feedRes.latencyMs
+            if (lastHttpCode !in 200..299 && feedRes.statusCode > 0) {
+                lastHttpCode = feedRes.statusCode
+            }
+            if (feedRes.isSuccess && feedRes.body.isNotBlank()) {
+                val list = runCatching {
+                    parseAuctionItemsFromJson(
+                        rawJson = feedRes.body,
+                        config = config,
+                        recentCorpus = recentCorpus,
+                        sourceLabel = "딱찰 사건피드 /assets/feed",
+                        allowDummyFallback = false
+                    )
+                }.getOrDefault(emptyList())
+                feedMatchedSlot = list.firstOrNull { candidate ->
+                    normalizeCaseNumber(candidate.auctionCase.caseId).equals(normalizedCase, ignoreCase = true) ||
+                        candidate.auctionCase.dedupKey.contains(normalizedCase, ignoreCase = true)
+                }
+            }
+            stepLogs += AdminPipelineStepLog(
+                stepIndex = stepLogs.size + 1,
+                title = "자산 피드 교차 조회 (/assets/feed?q=$normalizedCase)",
+                endpoint = "/api/v1/blog/assets/feed",
+                status = when {
+                    feedRes.isSuccess && feedMatchedSlot != null -> AdminPipelineStageStatus.SUCCESS
+                    feedRes.isSuccess -> AdminPipelineStageStatus.WARN
+                    else -> AdminPipelineStageStatus.ERROR
+                },
+                httpCode = feedRes.statusCode,
+                latencyMs = feedRes.latencyMs,
+                detail = if (feedMatchedSlot != null) {
+                    "피드 매칭 성공 (사진 ${feedMatchedSlot.courtPhotoUrls.size}건 · 방문 ${feedMatchedSlot.visitRecords.size}건)"
+                } else {
+                    formatHttpFailure("자산 피드 검색", feedRes)
+                }
+            )
+        }
+
+        // 3) Secondary fallback on /api/v1/blog/analysis-feed
+        var analysisMatchedSlot: GeneratedPostSlot? = null
+        if (primarySlot == null && feedMatchedSlot == null) {
+            val analysisRes = api.fetchAnalysisFeed(
+                apiBase = apiBase,
+                syncToken = token,
+                limit = 20,
+                enableExternalLinkNaver = config.enableExternalLinkNaver
+            )
+            totalLatency += analysisRes.latencyMs
+            if (lastHttpCode !in 200..299 && analysisRes.statusCode > 0) {
+                lastHttpCode = analysisRes.statusCode
+            }
+            if (analysisRes.isSuccess && analysisRes.body.isNotBlank()) {
+                val list = runCatching {
+                    parseAnalysisFeedJson(analysisRes.body, config, recentCorpus)
+                }.getOrDefault(emptyList())
+                analysisMatchedSlot = list.firstOrNull { candidate ->
+                    normalizeCaseNumber(candidate.auctionCase.caseId).equals(normalizedCase, ignoreCase = true) ||
+                        candidate.auctionCase.dedupKey.contains(normalizedCase, ignoreCase = true)
+                }
+            }
+            stepLogs += AdminPipelineStepLog(
+                stepIndex = stepLogs.size + 1,
+                title = "분석 피드 조회 (/analysis-feed)",
+                endpoint = "/api/v1/blog/analysis-feed",
+                status = when {
+                    analysisRes.isSuccess && analysisMatchedSlot != null -> AdminPipelineStageStatus.SUCCESS
+                    analysisRes.isSuccess -> AdminPipelineStageStatus.WARN
+                    else -> AdminPipelineStageStatus.ERROR
+                },
+                httpCode = analysisRes.statusCode,
+                latencyMs = analysisRes.latencyMs,
+                detail = if (analysisMatchedSlot != null) {
+                    "분석 피드 사건 매칭 완료"
+                } else {
+                    formatHttpFailure("분석 피드 검색", analysisRes)
+                }
+            )
+        }
+
+        val mergedSlot = mergeLookupSlots(primarySlot, feedMatchedSlot, analysisMatchedSlot)
+        if (mergedSlot == null) {
+            val errMsg = when {
+                lastHttpCode == 401 || lastHttpCode == 403 ->
+                    "딱찰 서버 인증 실패 (HTTP $lastHttpCode) · CRAWLER_SYNC_TOKEN 확인 필요"
+                lastHttpCode == 404 ->
+                    "딱찰 서버에서 사건번호 '$normalizedCase' 데이터를 찾을 수 없습니다 (HTTP 404)"
+                lastHttpCode in 200..299 ->
+                    "딱찰 서버 응답(HTTP $lastHttpCode)에 '$normalizedCase' 일치 사건이 없습니다"
+                else ->
+                    "딱찰 서버 조회 실패 (HTTP $lastHttpCode) · 네트워크 및 서버 설정을 확인하세요"
+            }
+            return TodakCaseLookupResult(
+                isSuccess = false,
+                normalizedCaseId = normalizedCase,
+                slot = null,
+                stepLogs = stepLogs,
+                httpStatusCode = lastHttpCode,
+                latencyMs = totalLatency,
+                message = errMsg
+            )
+        }
+
+        val finalStatus = if (byKeyRes.isSuccess) byKeyRes.statusCode else lastHttpCode
+        val regCount = mergedSlot.serverRegistryGapGu.size + mergedSlot.serverRegistryEulGu.size
+        val docCount = mergedSlot.serverCourtDocuments.size
+        val summary = "딱찰 서버 '${mergedSlot.auctionCase.caseId}' 조회 완료: 경매사진 ${mergedSlot.courtPhotoUrls.size}건 · 공식문건 ${docCount}종 · 방문기록 ${mergedSlot.visitRecords.size}건 · 등기 ${regCount}건"
+        return TodakCaseLookupResult(
+            isSuccess = true,
+            normalizedCaseId = mergedSlot.auctionCase.caseId,
+            slot = mergedSlot,
+            stepLogs = stepLogs,
+            httpStatusCode = finalStatus,
+            latencyMs = totalLatency,
+            message = summary
+        )
+    }
+
+    private fun mergeLookupSlots(
+        primary: GeneratedPostSlot?,
+        feed: GeneratedPostSlot?,
+        analysis: GeneratedPostSlot?
+    ): GeneratedPostSlot? {
+        val base = primary ?: feed ?: analysis ?: return null
+        val extraPhotos = (listOfNotNull(primary, feed, analysis).flatMap { it.courtPhotoUrls }).distinct()
+        val extraVisits = (listOfNotNull(primary, feed, analysis).flatMap { it.visitRecords }).distinctBy { it.visitId }
+        val gapGu = primary?.serverRegistryGapGu?.takeIf { it.isNotEmpty() }
+            ?: feed?.serverRegistryGapGu?.takeIf { it.isNotEmpty() }
+            ?: analysis?.serverRegistryGapGu.orEmpty()
+        val eulGu = primary?.serverRegistryEulGu?.takeIf { it.isNotEmpty() }
+            ?: feed?.serverRegistryEulGu?.takeIf { it.isNotEmpty() }
+            ?: analysis?.serverRegistryEulGu.orEmpty()
+        val docs = primary?.serverCourtDocuments?.takeIf { it.isNotEmpty() }
+            ?: feed?.serverCourtDocuments?.takeIf { it.isNotEmpty() }
+            ?: analysis?.serverCourtDocuments.orEmpty()
+        val analysisData = primary?.ddakchalAnalysisData
+            ?: analysis?.ddakchalAnalysisData
+            ?: feed?.ddakchalAnalysisData
+        return base.copy(
+            courtPhotoUrls = extraPhotos,
+            visitRecords = extraVisits,
+            serverRegistryGapGu = gapGu,
+            serverRegistryEulGu = eulGu,
+            serverCourtDocuments = docs,
+            ddakchalAnalysisData = analysisData
+        )
+    }
+
+    private fun parseSingleAssetResponseToSlot(
+        rawJson: String,
+        config: ServerAutomationConfig,
+        recentCorpus: List<String>,
+        sourceLabel: String
+    ): GeneratedPostSlot? {
+        val root = JSONObject(rawJson)
+        val dataObj = root.optJSONObject("data")
+        val candidatesArr = dataObj?.optJSONArray("items") ?: root.optJSONArray("items")
+        val itemObj = when {
+            dataObj?.optJSONObject("item") != null -> dataObj.optJSONObject("item")
+            dataObj?.optJSONObject("asset") != null -> dataObj.optJSONObject("asset")
+            root.optJSONObject("item") != null -> root.optJSONObject("item")
+            root.optJSONObject("asset") != null -> root.optJSONObject("asset")
+            candidatesArr != null && candidatesArr.length() > 0 -> candidatesArr.optJSONObject(0)
+            dataObj != null && (dataObj.has("case_no") || dataObj.has("caseNo") || dataObj.has("auction_dedup_key")) -> dataObj
+            root.has("case_no") || root.has("caseNo") || root.has("auction_dedup_key") -> root
+            else -> null
+        } ?: return null
+        return parseSingleAuctionItem(itemObj, 0, config, recentCorpus, sourceLabel)
+    }
+
     suspend fun reverseSyncQueueStatus(
         config: ServerAutomationConfig,
         itemId: String,
@@ -448,7 +1153,7 @@ class BlogAutomationRepository(
      */
     suspend fun runComprehensiveDdakchalDiagnostic(
         config: ServerAutomationConfig,
-        sampleCaseId: String = "2024타경4501"
+        sampleCaseId: String = ""
     ): DdakchalFullDiagnosticReport {
         val nowText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.KOREA).format(Date())
         val apiBase = config.ddakchalApiBase.trim().removeSuffix("/")
@@ -614,35 +1319,49 @@ class BlogAutomationRepository(
         )
 
         // 5. GET /api/v1/blog/assets/{caseNo}
-        val lookupKey = discoveredCaseKey ?: sampleCaseId.ifBlank { "2024타경4501" }
-        val assetRes = api.fetchAssetByKey(
-            apiBase = apiBase,
-            syncToken = token,
-            keyOrCaseNo = lookupKey,
-            refresh = false,
-            enableExternalLinkNaver = config.enableExternalLinkNaver
-        )
-        val assetParsedOk = assetRes.isSuccess && assetRes.body.isNotBlank() && runCatching {
-            val recentCorpus = configStore.getRecent7DayCorpus()
-            parseSingleAssetJson(assetRes.body, config, recentCorpus) != null
-        }.getOrDefault(false)
-        checks += DdakchalEndpointCheckItem(
-            id = "single_asset",
-            name = "5. 단건 최신 자산 1:1 매칭",
-            endpointPath = "/api/v1/blog/assets/$lookupKey",
-            method = "GET",
-            passed = assetParsedOk,
-            httpStatusCode = assetRes.statusCode,
-            latencyMs = assetRes.latencyMs,
-            detailMessage = if (assetParsedOk) {
-                "사건/키 '$lookupKey' 단건 자산·수치 매칭 검증 완료"
-            } else if (assetRes.isSuccess) {
-                "응답 수신되었으나 자산 스키마(case_no/appraisal_krw) 누락"
-            } else {
-                formatHttpFailure("단건 자산($lookupKey)", assetRes)
-            },
-            checkedSpec = "1:1 Asset Lookup"
-        )
+        val lookupKey = discoveredCaseKey ?: sampleCaseId.trim()
+        if (lookupKey.isBlank()) {
+            checks += DdakchalEndpointCheckItem(
+                id = "single_asset",
+                name = "5. 단건 최신 자산 1:1 매칭",
+                endpointPath = "/api/v1/blog/assets/{caseNo}",
+                method = "GET",
+                passed = false,
+                httpStatusCode = 0,
+                latencyMs = 0L,
+                detailMessage = "실서버 피드에 조회 가능한 실사건이 없어 단건 검증을 건너뛰었습니다.",
+                checkedSpec = "1:1 Asset Lookup"
+            )
+        } else {
+            val assetRes = api.fetchAssetByKey(
+                apiBase = apiBase,
+                syncToken = token,
+                keyOrCaseNo = lookupKey,
+                refresh = false,
+                enableExternalLinkNaver = config.enableExternalLinkNaver
+            )
+            val assetParsedOk = assetRes.isSuccess && assetRes.body.isNotBlank() && runCatching {
+                val recentCorpus = configStore.getRecent7DayCorpus()
+                parseSingleAssetJson(assetRes.body, config, recentCorpus) != null
+            }.getOrDefault(false)
+            checks += DdakchalEndpointCheckItem(
+                id = "single_asset",
+                name = "5. 단건 최신 자산 1:1 매칭",
+                endpointPath = "/api/v1/blog/assets/$lookupKey",
+                method = "GET",
+                passed = assetParsedOk,
+                httpStatusCode = assetRes.statusCode,
+                latencyMs = assetRes.latencyMs,
+                detailMessage = if (assetParsedOk) {
+                    "사건/키 '$lookupKey' 단건 자산·수치 매칭 검증 완료"
+                } else if (assetRes.isSuccess) {
+                    "응답 수신되었으나 자산 스키마(case_no/appraisal_krw) 누락"
+                } else {
+                    formatHttpFailure("단건 자산($lookupKey)", assetRes)
+                },
+                checkedSpec = "1:1 Asset Lookup"
+            )
+        }
 
         // 6. Reverse Sync Ready + Optional Cloudflare D1 & Worker Cron
         val cfConfigured = config.cfAccountId.isNotBlank() && config.cfApiToken.isNotBlank()
@@ -825,6 +1544,7 @@ class BlogAutomationRepository(
                 (post_id, queue_id, case_id, property_type, blog_category, platform, title, body_html, body_markdown, meta_json, processed_image_urls, similarity_score, status, scheduled_for)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """.trimIndent()
+            val enrichedHtml = HtmlExportEngine.renderArticleBodySnippet(slot, variant, config)
             val params = listOf(
                 "${slot.postId}-${platform.code.lowercase()}",
                 slot.queueId,
@@ -833,9 +1553,10 @@ class BlogAutomationRepository(
                 slot.auctionCase.propertyType.blogCategory,
                 platform.code,
                 variant.title,
-                variant.bodyHtml,
+                enrichedHtml,
                 variant.bodyText,
                 JSONObject().apply {
+                    put("slug", slot.auctionCase.dedupKey)
                     put("tags", JSONArray(variant.tags))
                     put("metaDescription", variant.metaDescription)
                     put("jsonLd", variant.jsonLdSchema)
@@ -1014,7 +1735,7 @@ class BlogAutomationRepository(
         config = config,
         recentCorpus = recentCorpus,
         sourceLabel = sourceLabel,
-        allowDummyFallback = true
+        allowDummyFallback = false
     )
 
     fun parseAnalysisFeedJson(
@@ -1278,22 +1999,22 @@ class BlogAutomationRepository(
         config: ServerAutomationConfig,
         recentCorpus: List<String>,
         sourceLabel: String,
-        allowDummyFallback: Boolean
+        @Suppress("UNUSED_PARAMETER") allowDummyFallback: Boolean
     ): List<GeneratedPostSlot> {
         val root = JSONObject(rawJson)
         val dataObj = root.optJSONObject("data") ?: root
         val items = dataObj.optJSONArray("items")
             ?: root.optJSONArray("items")
-            ?: return if (allowDummyFallback) DefaultSpecDataFactory.buildInitialDaily5Slots(config) else emptyList()
+            ?: return emptyList()
 
         if (items.length() == 0) {
-            return if (allowDummyFallback) DefaultSpecDataFactory.buildInitialDaily5Slots(config) else emptyList()
+            return emptyList()
         }
 
         val result = mutableListOf<GeneratedPostSlot>()
         for (i in 0 until items.length()) {
             val item = items.optJSONObject(i) ?: continue
-            result += parseSingleAuctionItem(item, i, config, recentCorpus, sourceLabel)
+            parseSingleAuctionItem(item, i, config, recentCorpus, sourceLabel)?.let { result += it }
         }
         return result
     }
@@ -1304,9 +2025,10 @@ class BlogAutomationRepository(
         config: ServerAutomationConfig,
         recentCorpus: List<String>,
         sourceLabel: String
-    ): GeneratedPostSlot {
-        val caseNo = item.optString("case_no").ifBlank { "2024타경${4500 + index}" }
-        val dedupKey = item.optString("auction_dedup_key").ifBlank { "ca-$caseNo" }
+    ): GeneratedPostSlot? {
+        val caseNo = item.optString("case_no").ifBlank { item.optString("caseNo") }.trim()
+        if (caseNo.isBlank()) return null
+        val dedupKey = item.optString("auction_dedup_key").ifBlank { item.optString("dedupKey") }.ifBlank { "ca-$caseNo" }
         val publishDate = item.optString("publish_date").ifBlank {
             item.optString("updated_at").take(10).ifBlank { "2026-11-22" }
         }
@@ -1325,42 +2047,58 @@ class BlogAutomationRepository(
             title = titleText
         )
 
-        val photoUrls = parseStringArrayField(item, "photo_urls")
+        val photoUrls = parseCourtPhotosField(item)
         val visitRecords = parseVisitRecordsField(item, caseNo)
+        val (serverGapGu, serverEulGu) = parseRegistryNodesField(item, caseNo)
+        val serverCourtDocs = parseCourtDocumentsField(item, caseNo, item.optString("court_name").ifBlank { "대법원 경매계" })
         val analysisData = parseBlogAnalysisData(item, photoUrls.size)
 
-        val appraisalKrw = item.optLong("appraisal_krw", 500_000_000L)
-        val minBidKrw = item.optLong("min_bid_krw", 320_000_000L)
+        val appraisalKrw = item.optLong("appraisal_krw", item.optLong("appraisalKrw", 0L))
+        val minBidKrw = item.optLong("min_bid_krw", item.optLong("minBidKrw", 0L))
+        val computedDiscount = if (appraisalKrw > 0L && minBidKrw > 0L) {
+            ((minBidKrw.toDouble() / appraisalKrw.toDouble()) * 100.0).toInt().coerceIn(1, 100)
+        } else 0
+        val realTradeKrw = item.optLong("real_trade_median_krw", 0L).let {
+            if (it > 0L) it else (appraisalKrw * 0.90).toLong()
+        }
 
         val auction = AuctionCaseIntel(
             caseId = caseNo,
             dedupKey = dedupKey,
-            courtName = item.optString("court_name").ifBlank { "대법원 경매계" },
-            address = item.optString("address").ifBlank { titleText.ifBlank { "$caseNo 소재지" } },
+            courtName = item.optString("court_name").ifBlank { item.optString("courtName") }.ifBlank { "관할 법원 미기재" },
+            address = item.optString("address").ifBlank { titleText.ifBlank { "$caseNo 소재지 미기재" } },
             propertyType = propType,
             appraisalPriceKrw = appraisalKrw,
             minBidPriceKrw = minBidKrw,
             winningPriceKrw = null,
-            bidCount = item.optInt("bid_count", 2),
-            discountRatePct = item.optInt("discount_rate_pct", 64),
-            auctionDate = item.optString("auction_date").ifBlank { "2026-12-05" },
-            baseRightDate = item.optString("base_right_date").ifBlank { "2021-06-15" },
-            dividendDeadline = item.optString("dividend_deadline").ifBlank { "2025-11-30" },
+            bidCount = item.optInt("bid_count", 1),
+            discountRatePct = item.optInt("discount_rate_pct", computedDiscount),
+            auctionDate = item.optString("auction_date"),
+            baseRightDate = item.optString("base_right_date"),
+            dividendDeadline = item.optString("dividend_deadline"),
             claimAmountKrw = item.optLong("claim_amount_krw", (appraisalKrw * 0.48).toLong()),
             depositRatePct = item.optInt("deposit_rate_pct", 10),
-            possessionSummary = item.optString("possession_summary").ifBlank { "현황조사서 확인 필요" },
-            tenantSummary = item.optString("tenant_summary").ifBlank { "매각물건명세서 임차인 확인" },
-            assumedRightsText = item.optString("assumed_rights_text").ifBlank { "말소기준권리 이후 소멸 여부 대조" },
+            possessionSummary = item.optString("possession_summary").ifBlank { "서버 미제공" },
+            tenantSummary = item.optString("tenant_summary").ifBlank { "서버 미제공" },
+            assumedRightsText = item.optString("assumed_rights_text").ifBlank { "서버 미제공" },
             specialCheckNotice = propType.focusSummary,
-            recentRealTradeMedianKrw = item.optLong("real_trade_median_krw", (appraisalKrw * 0.92).toLong()),
-            stats3yRatePct = item.optDouble("stats_3y_rate_pct", 72.5),
-            clicksLast7d = item.optInt("clicks_7d", 420),
+            recentRealTradeMedianKrw = realTradeKrw,
+            stats3yRatePct = item.optDouble("stats_3y_rate_pct", 0.0),
+            clicksLast7d = item.optInt("clicks_7d", 0),
             conservativeBidKrw = item.optLong("conservative_bid_krw", (minBidKrw * 1.03).toLong()),
             balancedBidKrw = item.optLong("balanced_bid_krw", (minBidKrw * 1.09).toLong()),
             aggressiveBidKrw = item.optLong("aggressive_bid_krw", (minBidKrw * 1.15).toLong())
         )
 
-        val fallbackVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, index, config)
+        val fallbackVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(
+            auction = auction,
+            seedIndex = index,
+            config = config,
+            serverGapGu = serverGapGu,
+            serverEulGu = serverEulGu,
+            serverDocuments = serverCourtDocs,
+            visitRecords = visitRecords
+        )
         val regionTag = auction.address.split(" ").take(2).joinToString(" ").ifBlank { auction.courtName }
         val urlStripRegex = Regex("""https?://[^\s"'<>]+""", RegexOption.IGNORE_CASE)
 
@@ -1455,7 +2193,10 @@ class BlogAutomationRepository(
             ddakchalAnalysisData = analysisData,
             courtPhotoUrls = photoUrls,
             visitRecords = visitRecords,
-            serverUpdatedAt = item.optString("updated_at")
+            serverUpdatedAt = item.optString("updated_at"),
+            serverRegistryGapGu = serverGapGu,
+            serverRegistryEulGu = serverEulGu,
+            serverCourtDocuments = serverCourtDocs
         )
     }
 
@@ -1485,50 +2226,268 @@ class BlogAutomationRepository(
         }
     }
 
-    private fun parseStringArrayField(item: JSONObject, key: String): List<String> {
-        val rawVal = item.opt(key) ?: return emptyList()
-        val arr = when (rawVal) {
+    private fun parseCourtPhotosField(item: JSONObject): List<String> {
+        val out = linkedSetOf<String>()
+        listOf("photo_urls", "court_photos", "photos", "images", "court_images", "appraisal_photos", "survey_photos", "r2_photos", "attachments").forEach { key ->
+            val arr = optJsonArrayFlexible(item, key)
+            if (arr != null) {
+                for (idx in 0 until arr.length()) {
+                    when (val entry = arr.opt(idx)) {
+                        is String -> entry.trim().takeIf { it.isNotBlank() }?.let { out += it }
+                        is JSONObject -> {
+                            val url = entry.optString("imageUrl")
+                                .ifBlank { entry.optString("url") }
+                                .ifBlank { entry.optString("photo_url") }
+                                .ifBlank { entry.optString("image_url") }
+                                .ifBlank { entry.optString("r2_url") }
+                                .ifBlank { entry.optString("src") }
+                                .trim()
+                            if (url.isNotBlank()) out += url
+                        }
+                    }
+                }
+            } else {
+                val single = item.optString(key).trim()
+                if (single.startsWith("http://") || single.startsWith("https://")) {
+                    out += single
+                }
+            }
+        }
+        return out.toList()
+    }
+
+    private fun optJsonArrayFlexible(item: JSONObject, key: String): JSONArray? {
+        val rawVal = item.opt(key) ?: return null
+        return when (rawVal) {
             is JSONArray -> rawVal
             is String -> if (rawVal.trim().startsWith("[")) runCatching { JSONArray(rawVal) }.getOrNull() else null
             else -> null
-        } ?: return emptyList()
+        }
+    }
 
+    private fun parseRegistryNodesField(
+        item: JSONObject,
+        caseNo: String
+    ): Pair<List<RegistryVisualNode>, List<RegistryVisualNode>> {
+        val gapGuList = mutableListOf<RegistryVisualNode>()
+        val eulGuList = mutableListOf<RegistryVisualNode>()
+
+        fun parseArray(arr: JSONArray?, defaultSection: RegistrySection) {
+            if (arr == null) return
+            for (idx in 0 until arr.length()) {
+                val obj = arr.optJSONObject(idx) ?: continue
+                val secRaw = obj.optString("section", "").uppercase()
+                val section = when {
+                    secRaw.contains("EUL") || secRaw.contains("을구") -> RegistrySection.EUL_GU
+                    secRaw.contains("TENANT") || secRaw.contains("임차") -> RegistrySection.TENANT_COURT
+                    secRaw.contains("GAP") || secRaw.contains("갑구") -> RegistrySection.GAP_GU
+                    else -> defaultSection
+                }
+                val isBase = obj.optBoolean("isBaseRight", obj.optBoolean("is_base_right", false))
+                val isAssumed = obj.optBoolean("isAssumedRisk", obj.optBoolean("is_assumed_risk", false))
+                val tone = when {
+                    isBase -> RegistryNodeTone.BASE_RIGHT_ANCHOR
+                    isAssumed -> RegistryNodeTone.ASSUMED_DANGER
+                    section == RegistrySection.GAP_GU && obj.optString("statusBadge", "").contains("소유") -> RegistryNodeTone.NEUTRAL_OWNERSHIP
+                    else -> RegistryNodeTone.EXTINGUISHED_SAFE
+                }
+                val title = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                    obj.optString("title", obj.optString("rightTitle", obj.optString("right_type", "등기 권리")))
+                )
+                val holder = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                    obj.optString("holderOrCreditor", obj.optString("creditor", obj.optString("holder", "등기권리자(비식별)")))
+                )
+                val explanation = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                    obj.optString("plainExplanation", obj.optString("note", obj.optString("outcome", title)))
+                )
+                val node = RegistryVisualNode(
+                    nodeId = obj.optString("nodeId", "$caseNo-${section.name}-$idx"),
+                    section = section,
+                    rankOrder = obj.optString("rankOrder", obj.optString("order_no", "${idx + 1}번")),
+                    registeredDate = obj.optString("registeredDate", obj.optString("registered_date", "")),
+                    title = title,
+                    holderOrCreditor = holder,
+                    amountOrShare = obj.optString("amountOrShare", obj.optString("amount_text", "-")),
+                    statusBadge = obj.optString("statusBadge", obj.optString("status", if (isAssumed) "인수 주의" else "소멸")),
+                    plainExplanation = explanation,
+                    nodeTone = tone,
+                    isBaseRight = isBase,
+                    isAssumedRisk = isAssumed
+                )
+                if (section == RegistrySection.GAP_GU) gapGuList += node else eulGuList += node
+            }
+        }
+
+        parseArray(optJsonArrayFlexible(item, "registry_gap_gu"), RegistrySection.GAP_GU)
+        parseArray(optJsonArrayFlexible(item, "registry_eul_gu"), RegistrySection.EUL_GU)
+        parseArray(optJsonArrayFlexible(item, "registry_entries"), RegistrySection.EUL_GU)
+        parseArray(optJsonArrayFlexible(item, "rights_history"), RegistrySection.EUL_GU)
+        return gapGuList to eulGuList
+    }
+
+    private fun parseCourtDocumentsField(
+        item: JSONObject,
+        caseNo: String,
+        courtName: String
+    ): List<CourtDocumentRecord> {
+        val docs = mutableListOf<CourtDocumentRecord>()
+
+        fun parseDocObj(obj: JSONObject, fallbackKind: CourtDocKind): CourtDocumentRecord? {
+            val kindRaw = obj.optString("docKind", obj.optString("kind", obj.optString("type", ""))).uppercase()
+            val kind = when {
+                kindRaw.contains("SALE") || kindRaw.contains("명세") -> CourtDocKind.SALE_SPECIFICATION
+                kindRaw.contains("STATUS") || kindRaw.contains("SURVEY") || kindRaw.contains("현황") -> CourtDocKind.STATUS_SURVEY
+                kindRaw.contains("APPRAISAL") || kindRaw.contains("감정") -> CourtDocKind.APPRAISAL_REPORT
+                else -> fallbackKind
+            }
+            val highlight = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                obj.optString("summaryHighlight", obj.optString("summary", "")).trim()
+            )
+            val linesArr = obj.optJSONArray("fullRecordLines") ?: obj.optJSONArray("lines")
+            val lines = if (linesArr != null) {
+                (0 until linesArr.length()).mapNotNull { i ->
+                    linesArr.optString(i).trim().takeIf { it.isNotBlank() }?.let {
+                        PrivacySanitizerEngine.sanitizeForPublicBlog(it)
+                    }
+                }
+            } else emptyList()
+            val riskNote = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                obj.optString("riskFlagNote", obj.optString("risk_note", "")).trim()
+            )
+            if (highlight.isBlank() && lines.isEmpty()) return null
+            return CourtDocumentRecord(
+                docKind = kind,
+                referenceNo = obj.optString("referenceNo", "$caseNo-${kind.title}"),
+                issuedDate = obj.optString("issuedDate", obj.optString("issued_date", "")),
+                issuer = obj.optString("issuer", courtName),
+                summaryHighlight = highlight.ifBlank { lines.firstOrNull().orEmpty() },
+                fullRecordLines = lines.ifEmpty { listOf(highlight) },
+                riskFlagNote = riskNote.ifBlank { "법원 공고 원문 기준 검증 완료" }
+            )
+        }
+
+        fun addFlatSummaryDoc(
+            keys: List<String>,
+            kind: CourtDocKind,
+            issuerLabel: String
+        ) {
+            if (docs.any { it.docKind == kind }) return
+            val rawText = keys.firstNotNullOfOrNull { k ->
+                item.optString(k).trim().takeIf { it.isNotBlank() && !it.startsWith("{") && !it.startsWith("[") }
+            } ?: return
+            val clean = PrivacySanitizerEngine.sanitizeForPublicBlog(rawText)
+            docs += CourtDocumentRecord(
+                docKind = kind,
+                referenceNo = "$caseNo-${kind.title}",
+                issuedDate = item.optString("updated_at").take(10),
+                issuer = issuerLabel,
+                summaryHighlight = clean,
+                fullRecordLines = clean.lines().filter { it.isNotBlank() }.ifEmpty { listOf(clean) },
+                riskFlagNote = "법원 공고·딱찰 서버 제공 원문 기준 검증"
+            )
+        }
+
+        optJsonArrayFlexible(item, "court_documents")?.let { arr ->
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                parseDocObj(obj, CourtDocKind.SALE_SPECIFICATION)?.let { docs += it }
+            }
+        }
+        item.optJSONObject("sale_specification")?.let { obj ->
+            parseDocObj(obj, CourtDocKind.SALE_SPECIFICATION)?.let { docs += it }
+        }
+        item.optJSONObject("status_survey")?.let { obj ->
+            parseDocObj(obj, CourtDocKind.STATUS_SURVEY)?.let { docs += it }
+        }
+        item.optJSONObject("appraisal_report")?.let { obj ->
+            parseDocObj(obj, CourtDocKind.APPRAISAL_REPORT)?.let { docs += it }
+        }
+        addFlatSummaryDoc(
+            keys = listOf("status_survey_summary", "survey_findings", "현황조사서", "status_survey"),
+            kind = CourtDocKind.STATUS_SURVEY,
+            issuerLabel = "$courtName 집행관실"
+        )
+        addFlatSummaryDoc(
+            keys = listOf("sale_spec_summary", "매각물건명세서", "sale_specification"),
+            kind = CourtDocKind.SALE_SPECIFICATION,
+            issuerLabel = courtName
+        )
+        addFlatSummaryDoc(
+            keys = listOf("appraisal_summary", "감정평가서", "appraisal_report"),
+            kind = CourtDocKind.APPRAISAL_REPORT,
+            issuerLabel = "법원 지정 감정평가법인"
+        )
+        return docs.distinctBy { it.docKind }
+    }
+
+    private fun parseStringArrayField(item: JSONObject, key: String): List<String> {
+        val arr = optJsonArrayFlexible(item, key) ?: return emptyList()
         return (0 until arr.length())
             .mapNotNull { idx -> arr.optString(idx).trim().takeIf { it.isNotBlank() } }
     }
 
     private fun parseVisitRecordsField(item: JSONObject, caseNo: String): List<FieldVisitRecord> {
-        val rawVal = item.opt("visit_records") ?: item.opt("status_survey_visits") ?: return emptyList()
-        val arr = when (rawVal) {
-            is JSONArray -> rawVal
-            is String -> if (rawVal.trim().startsWith("[")) runCatching { JSONArray(rawVal) }.getOrNull() else null
-            else -> null
-        } ?: return emptyList()
+        val arr = optJsonArrayFlexible(item, "visit_records")
+            ?: optJsonArrayFlexible(item, "status_survey_visits")
+            ?: optJsonArrayFlexible(item, "bailiff_visits")
+            ?: optJsonArrayFlexible(item, "survey_visits")
+            ?: optJsonArrayFlexible(item, "visits")
 
-        return (0 until arr.length()).mapNotNull { idx ->
-            val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
-            val round = obj.optString("visitRound", obj.optString("round", "${idx + 1}차 방문")).trim()
-            val visitedAt = obj.optString("visitedAt", obj.optString("visited_at", "")).trim()
-            val findings = obj.optString("findingsNote", obj.optString("findings", obj.optString("note", ""))).trim()
-            if (findings.isBlank() && visitedAt.isBlank()) return@mapNotNull null
-            val srcRaw = obj.optString("source", "").uppercase()
-            val src = when {
-                srcRaw.contains("RESIDENT") || round.contains("전입") -> VisitRecordSource.RESIDENT_CHECK
-                srcRaw.contains("MANAGE") || round.contains("관리") -> VisitRecordSource.MANAGEMENT_OFFICE
-                srcRaw.contains("IMJANG") || srcRaw.contains("FIELD") || round.contains("임장") -> VisitRecordSource.FIELD_IMJANG
-                else -> VisitRecordSource.BAILIFF_SURVEY
+        val parsed = if (arr != null) {
+            (0 until arr.length()).mapNotNull { idx ->
+                val obj = arr.optJSONObject(idx) ?: return@mapNotNull null
+                val round = obj.optString("visitRound", obj.optString("round", "${idx + 1}차 방문")).trim()
+                val visitedAt = obj.optString("visitedAt", obj.optString("visited_at", "")).trim()
+                val findings = obj.optString("findingsNote", obj.optString("findings", obj.optString("note", ""))).trim()
+                if (findings.isBlank() && visitedAt.isBlank()) return@mapNotNull null
+                val srcRaw = obj.optString("source", "").uppercase()
+                val src = when {
+                    srcRaw.contains("RESIDENT") || round.contains("전입") -> VisitRecordSource.RESIDENT_CHECK
+                    srcRaw.contains("MANAGE") || round.contains("관리") -> VisitRecordSource.MANAGEMENT_OFFICE
+                    srcRaw.contains("IMJANG") || srcRaw.contains("FIELD") || round.contains("임장") -> VisitRecordSource.FIELD_IMJANG
+                    else -> VisitRecordSource.BAILIFF_SURVEY
+                }
+                FieldVisitRecord(
+                    visitId = obj.optString("visitId", "$caseNo-srv-visit-$idx"),
+                    visitRound = round.ifBlank { "${idx + 1}차 조사" },
+                    visitedAt = visitedAt.ifBlank { "현황조사서 기준일" },
+                    source = src,
+                    visitorLabel = obj.optString("visitorLabel", obj.optString("visitor", "법원 집행관")),
+                    occupancyStatus = obj.optString("occupancyStatus", obj.optString("occupancy", "현황 확인")),
+                    findingsNote = findings.ifBlank { "현황조사 방문 기록 확인" },
+                    attachedPhotoUri = obj.optString("attachedPhotoUri", obj.optString("photo_url", ""))
+                )
             }
-            FieldVisitRecord(
-                visitId = obj.optString("visitId", "$caseNo-srv-visit-$idx"),
-                visitRound = round.ifBlank { "${idx + 1}차 조사" },
-                visitedAt = visitedAt.ifBlank { "현황조사서 기준일" },
-                source = src,
-                visitorLabel = obj.optString("visitorLabel", obj.optString("visitor", "법원 집행관")),
-                occupancyStatus = obj.optString("occupancyStatus", obj.optString("occupancy", "현황 확인")),
-                findingsNote = findings.ifBlank { "현황조사 방문 기록 확인" },
-                attachedPhotoUri = obj.optString("attachedPhotoUri", obj.optString("photo_url", ""))
+        } else emptyList()
+
+        if (parsed.isNotEmpty()) return parsed
+
+        // Derive a real visit log directly from server-provided status_survey / survey_findings if present
+        val surveyObj = item.optJSONObject("status_survey")
+        val surveySummary = surveyObj?.optString("summaryHighlight", surveyObj.optString("summary", ""))?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: item.optString("status_survey_summary").trim().takeIf { it.isNotBlank() }
+            ?: item.optString("survey_findings").trim().takeIf { it.isNotBlank() }
+            ?: item.optString("현황조사서").trim().takeIf { it.isNotBlank() }
+        if (!surveySummary.isNullOrBlank()) {
+            val cleanNote = PrivacySanitizerEngine.sanitizeForPublicBlog(surveySummary)
+            val surveyDate = surveyObj?.optString("issuedDate", surveyObj.optString("issued_date", ""))
+                ?.trim()?.ifBlank { "법원 현황조사서 기준일" } ?: "법원 현황조사서 기준일"
+            return listOf(
+                FieldVisitRecord(
+                    visitId = "$caseNo-srv-status-survey",
+                    visitRound = "법원 집행관 현황조사서",
+                    visitedAt = surveyDate,
+                    source = VisitRecordSource.BAILIFF_SURVEY,
+                    visitorLabel = surveyObj?.optString("issuer", "법원 집행관실")?.ifBlank { "법원 집행관실" } ?: "법원 집행관실",
+                    occupancyStatus = PrivacySanitizerEngine.sanitizeForPublicBlog(
+                        item.optString("possession_summary").ifBlank { "현황조사서 기재" }
+                    ),
+                    findingsNote = cleanNote
+                )
             )
         }
+        return emptyList()
     }
 
     private fun parseBlogAnalysisData(item: JSONObject, photoCount: Int): DdakchalBlogAnalysisData? {

@@ -90,7 +90,7 @@ fun AiCaseSearchAndTestRegisterCard(
     onDiagnoseNaverKeyword: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    val defaultQuery = slots.firstOrNull()?.auctionCase?.caseId ?: "2024타경4501"
+    val defaultQuery = slots.firstOrNull()?.auctionCase?.caseId.orEmpty()
     var query by rememberSaveable { mutableStateOf(defaultQuery) }
 
     StudioCard(
@@ -125,7 +125,7 @@ fun AiCaseSearchAndTestRegisterCard(
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
-            label = { Text("사건번호 또는 지역·물건 검색 (예: 2024타경4501)") },
+            label = { Text("조회할 법원 사건번호 또는 지역·물건 입력") },
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()

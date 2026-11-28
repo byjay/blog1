@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
@@ -115,11 +117,12 @@ fun ArticleQualityPreviewModal(
     onAutoFixSlot: (String) -> Unit,
     onPublishSelectedChannelsAndVerify: (String, String) -> Unit,
     onPublishNaverDirectAndVerify: (String, String) -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onRefreshCourtEvidence: (caseId: String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    var modalTab by remember(slot.postId) { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
+    var modalTab by remember(slot.postId, initialTabIndex) { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
     var showOnlyFailed by remember { mutableStateOf(false) }
 
     val selectedChannel = uiState.selectedChannel
@@ -133,12 +136,8 @@ fun ArticleQualityPreviewModal(
     val evalResult = remember(slot, uiState.config, uiState.proFunnel, regTemplate) {
         Article30PointEvaluator.evaluate(slot, uiState.config, uiState.proFunnel, regTemplate)
     }
-    val courtArchive = remember(slot.auctionCase.caseId, slot.courtPhotoUrls, slot.visitRecords) {
-        CourtEvidenceRecorder.recordFullArchive(
-            auction = slot.auctionCase,
-            courtPhotoUrls = slot.courtPhotoUrls,
-            customVisitRecords = slot.visitRecords
-        )
+    val courtArchive = remember(slot.postId, slot.courtPhotoUrls, slot.visitRecords, slot.serverRegistryGapGu, slot.serverRegistryEulGu, slot.serverCourtDocuments) {
+        CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
     }
 
     var localDataUris by remember(slot.postId, slot.courtPhotoUrls) {
@@ -336,6 +335,11 @@ fun ArticleQualityPreviewModal(
                                 .padding(14.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            EasyMenuGuideStrip(
+                                icon = Icons.Filled.Verified,
+                                easyGuide = "30가지 검색·신뢰 기준을 자동 채점합니다. 95점 미만이면 '자동 품질 보완' 버튼 한 번으로 바로 끌어올립니다.",
+                                accentColor = EmeraldPrimary
+                            )
                             Surface(
                                 color = if (evalResult.eligibleForRegistration) EmeraldContainer else AmberContainer,
                                 shape = MaterialTheme.shapes.medium,
@@ -468,6 +472,11 @@ fun ArticleQualityPreviewModal(
                                 .padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
+                            EasyMenuGuideStrip(
+                                icon = Icons.Filled.FolderOpen,
+                                easyGuide = "법원과 딱찰 서버가 제공하는 현장사진·현황조사서·매각물건명세서·등기부·4축 칼분석 전체 자료입니다.",
+                                accentColor = MintSecondary
+                            )
                             CourtFullEvidenceArchiveCard(
                                 auction = slot.auctionCase,
                                 archive = courtArchive,
@@ -492,6 +501,9 @@ fun ArticleQualityPreviewModal(
                                 },
                                 onAddVisitRecord = { src, date, occupancy, findings ->
                                     onAddVisitRecord(slot.postId, src, date, occupancy, findings)
+                                },
+                                onRefreshCourtEvidence = {
+                                    onRefreshCourtEvidence(slot.auctionCase.caseId)
                                 }
                             )
                         }

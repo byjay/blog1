@@ -213,10 +213,24 @@ CREATE TABLE IF NOT EXISTS publish_logs (
 );
 """.trimIndent()
 
-    fun generateWranglerToml(config: ServerAutomationConfig): String = """
+    fun generateWranglerToml(config: ServerAutomationConfig): String {
+        val cfHost = config.cloudflareSiteBase
+            .trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .trimEnd('/')
+            .ifBlank { "aution.codeb.app" }
+        val cfPath = config.cloudflareBlogPath.trim().let { if (it.startsWith("/")) it else "/$it" }
+        return """
 name = "${config.cfWorkerScriptName.ifBlank { "ddakchal-blog-worker" }}"
-main = "src/worker-cron.ts"
+main = "src/worker.ts"
 compatibility_date = "2026-11-01"
+
+routes = [
+  { pattern = "$cfHost$cfPath*", custom_domain = true },
+  { pattern = "$cfHost/robots.txt", custom_domain = true },
+  { pattern = "$cfHost/sitemap.xml", custom_domain = true }
+]
 
 [triggers]
 # 정각(:00) 회피 Anti-Bot 랜덤 분 오프셋 적용
@@ -233,16 +247,26 @@ bucket_name = "ddakchal-documents"
 
 [vars]
 DDAKCHAL_API_BASE = "${config.ddakchalApiBase}"
+CLOUDFLARE_SITE_BASE = "https://$cfHost"
+CLOUDFLARE_BLOG_PATH = "$cfPath"
 DAILY_POST_LIMIT = "${config.dailyPostLimit}"
 MIN_DELAY_MINUTES = "${config.minDelayMinutes}"
 MAX_DELAY_MINUTES = "${config.maxDelayMinutes}"
 ENABLE_EXTERNAL_LINK_NAVER = "${config.enableExternalLinkNaver}"
 """.trimIndent()
+    }
 
-    fun generateWorkerScheduledTs(config: ServerAutomationConfig): String = """
+    fun generateAutionWebWorkerTs(config: ServerAutomationConfig): String =
+        generateWorkerScheduledTs(config)
+
+    fun generateWorkerScheduledTs(config: ServerAutomationConfig): String {
+        val cfPath = config.cloudflareBlogPath.trim().let { if (it.startsWith("/")) it else "/$it" }
+        return """
 export interface Env {
   DB: D1Database;
   DDAKCHAL_API_BASE: string;
+  CLOUDFLARE_SITE_BASE?: string;
+  CLOUDFLARE_BLOG_PATH?: string;
   CRAWLER_SYNC_TOKEN: string;
   DAILY_POST_LIMIT: string;
   MIN_DELAY_MINUTES: string;
@@ -251,6 +275,67 @@ export interface Env {
 }
 
 export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    const blogPath = (env.CLOUDFLARE_BLOG_PATH || "$cfPath").replace(/\/+$/, "");
+    const siteBase = (env.CLOUDFLARE_SITE_BASE || url.origin).replace(/\/+$/, "");
+
+    if (url.pathname === "/robots.txt") {
+      return new Response(`User-agent: *\nAllow: /\nSitemap: ${'$'}{siteBase}/sitemap.xml\n`, {
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    if (url.pathname === "/sitemap.xml") {
+      const { results } = await env.DB.prepare(
+        "SELECT post_id, case_id, json_extract(meta_json, '$.slug') AS slug, created_at FROM generated_posts WHERE platform='CLOUDFLARE' ORDER BY created_at DESC LIMIT 100"
+      ).all();
+      const urls = (results || []).map((row: any) => {
+        const slug = encodeURIComponent(row.slug || row.post_id || row.case_id);
+        return `<url><loc>${'$'}{siteBase}${'$'}{blogPath}/${'$'}{slug}</loc></url>`;
+      }).join("");
+      return new Response(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${'$'}{urls}</urlset>`, {
+        headers: { "content-type": "application/xml; charset=utf-8" }
+      });
+    }
+
+    if (url.pathname === blogPath || url.pathname === `${'$'}{blogPath}/`) {
+      const { results } = await env.DB.prepare(
+        "SELECT post_id, case_id, title, blog_category, json_extract(meta_json, '$.slug') AS slug, created_at FROM generated_posts WHERE platform='CLOUDFLARE' ORDER BY created_at DESC LIMIT 30"
+      ).all();
+      const listHtml = (results || []).map((row: any) => {
+        const slug = encodeURIComponent(row.slug || row.post_id || row.case_id);
+        return `<li><a href="${'$'}{blogPath}/${'$'}{slug}">${'$'}{row.title}</a> <small>(${'$'}{row.case_id} · ${'$'}{row.blog_category})</small></li>`;
+      }).join("");
+      return new Response(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>경매스튜디오 리포트</title></head><body><main><h1>딱찰 경매 권리·세무 아카이브</h1><ul>${'$'}{listHtml}</ul></main></body></html>`, {
+        headers: { "content-type": "text/html; charset=utf-8" }
+      });
+    }
+
+    if (url.pathname.startsWith(`${'$'}{blogPath}/`)) {
+      const slug = decodeURIComponent(url.pathname.slice(blogPath.length + 1).replace(/\/+$/, ""));
+      const row: any = await env.DB.prepare(
+        "SELECT post_id, case_id, title, body_html, meta_json, created_at FROM generated_posts WHERE platform='CLOUDFLARE' AND (json_extract(meta_json, '$.slug') = ? OR post_id = ? OR case_id = ?) ORDER BY created_at DESC LIMIT 1"
+      ).bind(slug, slug, slug).first();
+      if (!row) {
+        return new Response("Post Not Found", { status: 404 });
+      }
+      let metaDesc = "";
+      let jsonLd = "";
+      try {
+        const meta = JSON.parse(row.meta_json || "{}");
+        metaDesc = meta.metaDescription || "";
+        jsonLd = meta.jsonLd || "";
+      } catch {}
+      return new Response(
+        `<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${'$'}{row.title}</title><meta name="description" content="${'$'}{metaDesc.replace(/"/g, "&quot;")}">${'$'}{jsonLd ? `<script type="application/ld+json">${'$'}{jsonLd}</script>` : ""}</head><body><article>${'$'}{row.body_html}</article></body></html>`,
+        { headers: { "content-type": "text/html; charset=utf-8" } }
+      );
+    }
+
+    return new Response("Ddakchal Blog Worker Active", { status: 200 });
+  },
+
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const jitterMs = Math.floor(Math.random() * 45_000) + 5_000;
     await new Promise((r) => setTimeout(r, jitterMs));
@@ -279,10 +364,11 @@ export default {
 
     await env.DB.prepare(
       "INSERT INTO publish_logs (log_id, post_id, platform, published_url, retry_count) VALUES (?, ?, ?, ?, ?)"
-    ).bind(crypto.randomUUID(), "CRON_DAILY_5", "CLOUDFLARE", `${'$'}{env.DDAKCHAL_API_BASE}/blog`, 0).run();
+    ).bind(crypto.randomUUID(), "CRON_DAILY_5", "CLOUDFLARE", `${'$'}{env.CLOUDFLARE_SITE_BASE || env.DDAKCHAL_API_BASE}${'$'}{env.CLOUDFLARE_BLOG_PATH || "$cfPath"}`, 0).run();
   }
 };
 """.trimIndent()
+    }
 
     fun generateSelectorsJson(): String = """
 {

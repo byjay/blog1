@@ -349,9 +349,30 @@ $funnelHtml
         )
     }
 
-    fun sampleAuctionForType(type: PropertyType): AuctionCaseIntel =
-        DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig())
-            .firstOrNull { it.auctionCase.propertyType == type }
-            ?.auctionCase
-            ?: DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig()).first().auctionCase
+    fun sampleAuctionForType(type: PropertyType): AuctionCaseIntel = AuctionCaseIntel(
+        dedupKey = "template-preview-${type.name.lowercase()}",
+        caseId = "사건번호-미리보기",
+        courtName = "관할지방법원",
+        address = "템플릿 치환 미리보기 소재지 (${type.displayLabel})",
+        propertyType = type,
+        appraisalPriceKrw = 350_000_000L,
+        minBidPriceKrw = 245_000_000L,
+        recentRealTradeMedianKrw = 365_000_000L,
+        stats3yRatePct = 82.4,
+        bidCount = 1,
+        discountRatePct = 70,
+        depositRatePct = 10,
+        clicksLast7d = 0,
+        baseRightDate = "기준일-미리보기",
+        dividendDeadline = "배당종기-미리보기",
+        claimAmountKrw = 180_000_000L,
+        assumedRightsText = "템플릿 권리분석 치환 영역",
+        possessionSummary = "템플릿 점유현황 치환 영역",
+        tenantSummary = "템플릿 임차현황 치환 영역",
+        conservativeBidKrw = 252_000_000L,
+        balancedBidKrw = 274_000_000L,
+        aggressiveBidKrw = 291_000_000L,
+        auctionDate = "매각기일-미리보기",
+        specialCheckNotice = "${type.displayLabel} 전용 특수 점검 항목"
+    )
 }

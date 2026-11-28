@@ -2,7 +2,6 @@ package com.example
 
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.example.data.ProFunnelStore
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.ProAnalysisAndPhotoGuideEngine
 import com.example.engine.RegistryAndMotionEngine
 import com.example.model.ChannelPlatform
@@ -39,7 +38,7 @@ class RegistryMotionAndMarketingTest {
     @Test
     fun naverGeneratedProse_usesHumanVeteranStyleWithoutAiCliches_andPassesAllQa() {
         val config = ServerAutomationConfig(enableExternalLinkNaver = false)
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(config)
+        val slots = TestFixtures.sampleSlots(config)
         assertEquals(5, slots.size)
 
         slots.forEach { slot ->
@@ -63,7 +62,7 @@ class RegistryMotionAndMarketingTest {
 
     @Test
     fun registryAndMotionEngine_buildsRegistryTimeline5SceneMotionAndRevenueForecast() {
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig())
+        val slots = TestFixtures.sampleSlots(ServerAutomationConfig())
         val villaSlot = slots[1] // 2025타경11842 with senior tenant risk
         val villaFacts = RegistryAndMotionEngine.buildRegistryFacts(villaSlot.auctionCase)
 

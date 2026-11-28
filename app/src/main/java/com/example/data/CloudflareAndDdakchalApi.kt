@@ -149,7 +149,8 @@ class CloudflareAndDdakchalApi(
         since: String? = null,
         category: String? = null,
         limit: Int = 20,
-        flush: Boolean = true
+        flush: Boolean = true,
+        query: String? = null
     ): HttpCallResult = withContext(ioDispatcher) {
         val baseUrl = "${apiBase.trimEnd('/')}/api/v1/blog/assets/feed"
         val httpUrl = baseUrl.toHttpUrlOrNull()?.newBuilder()?.apply {
@@ -157,6 +158,7 @@ class CloudflareAndDdakchalApi(
             addQueryParameter("flush", flush.toString())
             if (!since.isNullOrBlank()) addQueryParameter("since", since.trim())
             if (!category.isNullOrBlank()) addQueryParameter("category", category.trim())
+            if (!query.isNullOrBlank()) addQueryParameter("q", query.trim())
         }?.build()?.toString() ?: "$baseUrl?limit=$limit&flush=$flush"
 
         val reqBuilder = Request.Builder()

@@ -212,6 +212,7 @@ class FirebaseAiCaseSearchService(
             directAnswer: String,
             faqs: List<DdakchalQaPair>
         ): String {
+            val c = slot.auctionCase
             val mainEntity = JSONArray().apply {
                 faqs.forEach { qa ->
                     put(
@@ -229,12 +230,28 @@ class FirebaseAiCaseSearchService(
                     )
                 }
             }
-            return JSONObject().apply {
-                put("@context", "https://schema.org")
+            val articleObj = JSONObject().apply {
+                put("@type", "Article")
+                put("headline", "${c.caseId} ${c.address} ${c.propertyType.displayLabel} 경매 AI 권리분석 리포트")
+                put("datePublished", "2026-11-22T08:17:00+09:00")
+                put("author", JSONObject().apply {
+                    put("@type", "Organization")
+                    put("name", "딱찰(DDAKCHAL)")
+                })
+                put("about", c.address)
+            }
+            val faqObj = JSONObject().apply {
                 put("@type", "FAQPage")
-                put("name", "${slot.auctionCase.caseId} ${slot.auctionCase.address} 경매 AI 권리분석 Q&A")
+                put("name", "${c.caseId} ${c.address} 경매 AI 권리분석 Q&A")
                 put("description", directAnswer.replace(urlStripRegex, ""))
                 put("mainEntity", mainEntity)
+            }
+            return JSONObject().apply {
+                put("@context", "https://schema.org")
+                put("@graph", JSONArray().apply {
+                    put(articleObj)
+                    put(faqObj)
+                })
             }.toString(2)
         }
 
@@ -257,10 +274,50 @@ class FirebaseAiCaseSearchService(
             }.trim()
 
             val updatedVariants = slot.variants.mapValues { (platform, variant) ->
-                val mergedBodyText = if (variant.bodyText.contains("[AI 검색 답변 요약")) {
+                val headerLabel = when (platform) {
+                    ChannelPlatform.NAVER -> "[핵심 질의응답 브리핑]"
+                    ChannelPlatform.TISTORY -> "[실전 권리·입찰 문답 정리]"
+                    ChannelPlatform.CLOUDFLARE -> "[AI 검색 요약 · 핵심 Q&A]"
+                }
+                val topFaqs = pack.faqPairs.take(2)
+                val channelFaqSnippet = buildString {
+                    appendLine(headerLabel)
+                    if (platform == ChannelPlatform.CLOUDFLARE) {
+                        appendLine(cleanHook)
+                    } else if (platform == ChannelPlatform.TISTORY) {
+                        appendLine(cleanDirect)
+                    }
+                    topFaqs.forEach { qa ->
+                        val qClean = qa.question.replace(urlStripRegex, "").trim()
+                        val aClean = qa.answer.replace(urlStripRegex, "").trim()
+                        appendLine("질문: $qClean")
+                        appendLine("답변: $aClean")
+                    }
+                }.trim()
+
+                val alreadyHasFaq = variant.bodyText.contains("[핵심 질의응답") ||
+                    variant.bodyText.contains("[실전 권리·입찰") ||
+                    variant.bodyText.contains("[AI 검색 요약")
+                val mergedBodyText = if (alreadyHasFaq) {
                     variant.bodyText
                 } else {
-                    "${variant.bodyText}\n\n$faqSectionText"
+                    val candidate = "${variant.bodyText}\n\n$channelFaqSnippet"
+                    if (candidate.count { !it.isWhitespace() } <= 2420) {
+                        candidate
+                    } else {
+                        val compactSnippet = buildString {
+                            appendLine(headerLabel)
+                            topFaqs.take(1).forEach { qa ->
+                                appendLine("질문: ${qa.question.replace(urlStripRegex, "").trim()}")
+                                append("답변: ${qa.answer.replace(urlStripRegex, "").trim()}")
+                            }
+                        }.trim()
+                        if ("${variant.bodyText}\n\n$compactSnippet".count { !it.isWhitespace() } <= 2480) {
+                            "${variant.bodyText}\n\n$compactSnippet"
+                        } else {
+                            variant.bodyText
+                        }
+                    }
                 }
                 val mergedBodyHtml = if (variant.bodyHtml.contains("faq-geo")) {
                     variant.bodyHtml
@@ -280,17 +337,25 @@ class FirebaseAiCaseSearchService(
                 } else {
                     mergedBodyText
                 }
-                val mergedTags = (variant.tags + pack.aiKeywords.map { it.replace(" ", "") }).distinct().take(12)
+                val mergedTags = (variant.tags + pack.aiKeywords.map { it.replace(" ", "") })
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .distinct()
+                    .take(8)
+                    .let { list -> if (list.size >= 5) list else (list + variant.tags).distinct().take(8) }
+                val safeJsonLd = if (platform == ChannelPlatform.NAVER && !config.enableExternalLinkNaver) {
+                    variant.jsonLdSchema
+                } else if (pack.faqJsonLd.contains("\"@type\": \"Article\"") && pack.faqJsonLd.contains("\"@type\": \"FAQPage\"")) {
+                    pack.faqJsonLd
+                } else {
+                    buildFaqAndListingJsonLd(slot, cleanDirect, pack.faqPairs)
+                }
                 variant.copy(
                     bodyText = safeText,
                     bodyHtml = safeHtml,
-                    metaDescription = cleanDirect.take(150),
+                    metaDescription = cleanDirect.take(150).ifBlank { variant.metaDescription },
                     tags = mergedTags,
-                    jsonLdSchema = if (platform == ChannelPlatform.NAVER && !config.enableExternalLinkNaver) {
-                        variant.jsonLdSchema
-                    } else {
-                        pack.faqJsonLd
-                    }
+                    jsonLdSchema = safeJsonLd
                 )
             }
 

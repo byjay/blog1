@@ -3,7 +3,6 @@ package com.example
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.example.data.BlogPostTemplateStore
 import com.example.engine.BlogPostTemplateEngine
-import com.example.engine.DefaultSpecDataFactory
 import com.example.model.ChannelPlatform
 import com.example.model.PropertyType
 import com.example.model.ServerAutomationConfig
@@ -92,7 +91,7 @@ class BlogPostTemplateStoreTest {
     @Test
     fun templateEngine_rendersPlaceholders_andEnforcesNaverExternalUrlBlock() {
         val config = ServerAutomationConfig(enableExternalLinkNaver = false)
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(config).first()
+        val slot = TestFixtures.sampleSlots(config).first()
         val auction = slot.auctionCase
         val baseNaver = slot.variants[ChannelPlatform.NAVER]!!
 

@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Security
@@ -57,6 +58,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -81,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.engine.Article30PointEvaluator
 import com.example.engine.CourtEvidenceRecorder
+import com.example.engine.PostAuctionFollowUpEngine
 import com.example.engine.QaVerificationEngine
 import com.example.engine.RegistryInfographicEngine
 import com.example.model.ChannelPlatform
@@ -156,6 +159,25 @@ fun DashboardScreen(
     onRunPerfectDdakchalDiag: () -> Unit = {},
     onRefreshNaverPublishStatus: () -> Unit = {},
     onSelectNaverWriteMode: (NaverAutoWriteMode) -> Unit = {},
+    onToggleAdminRegion: (String) -> Unit = {},
+    onSelectAdminCategory: (String) -> Unit = {},
+    onAdminSearchQueryChange: (String) -> Unit = {},
+    onSelectAdminCrawlLimit: (Int) -> Unit = {},
+    onSaveAdminInlineAuth: (
+        apiBase: String,
+        syncToken: String,
+        cfAccountId: String,
+        cfD1DatabaseId: String,
+        cfApiToken: String
+    ) -> Unit = { _, _, _, _, _ -> },
+    onDiscoverServerDb: () -> Unit = {},
+    onRunTodakCrawlOnly: () -> Unit = {},
+    onRunTodakFullPipeline: () -> Unit = {},
+    onGenerateFromDbItem: (String) -> Unit = {},
+    onCaseLookupInputChange: (String) -> Unit = {},
+    onLookupCaseAndAutoPreview: (caseInput: String, preferredTab: Int) -> Unit = { _, _ -> },
+    onConsumeAutoPreview: () -> Unit = {},
+    onOpenQaTab: () -> Unit = {},
     onRunAiEvalSelected: () -> Unit,
     onTestBusanProfitableLand: () -> Unit,
     onTestLowScoreDraft: () -> Unit,
@@ -185,6 +207,15 @@ fun DashboardScreen(
     var previewModalSlotId by rememberSaveable { mutableStateOf<String?>(null) }
     var previewModalInitialTab by rememberSaveable { mutableIntStateOf(0) }
 
+    LaunchedEffect(uiState.pendingAutoPreviewNonce, uiState.pendingAutoPreviewSlotId) {
+        val targetSlotId = uiState.pendingAutoPreviewSlotId
+        if (uiState.pendingAutoPreviewNonce > 0L && !targetSlotId.isNullOrBlank()) {
+            previewModalInitialTab = uiState.pendingAutoPreviewTab
+            previewModalSlotId = targetSlotId
+            onConsumeAutoPreview()
+        }
+    }
+
     val selectedSlot = uiState.slots.firstOrNull { it.postId == uiState.selectedSlotId }
         ?: uiState.slots.firstOrNull()
     val dailyCount = uiState.selectedWeeklyDailyCount.coerceIn(3, 5)
@@ -203,6 +234,30 @@ fun DashboardScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // ==================== TOP-LEVEL OWNER ADMIN CONSOLE (TODAK / DDAKCHAL) ====================
+        item(key = "todak_top_admin_console") {
+            TodakAdminConsoleCard(
+                uiState = uiState,
+                onToggleRegion = onToggleAdminRegion,
+                onSelectCategory = onSelectAdminCategory,
+                onSearchQueryChange = onAdminSearchQueryChange,
+                onSelectCrawlLimit = onSelectAdminCrawlLimit,
+                onSaveInlineAuth = onSaveAdminInlineAuth,
+                onDiscoverServerDb = onDiscoverServerDb,
+                onRunCrawlEngineOnly = onRunTodakCrawlOnly,
+                onRunFullAdminPipeline = onRunTodakFullPipeline,
+                onSyncQueueAndD1 = onRefreshQueueCharts,
+                onGenerateFromDbItem = onGenerateFromDbItem,
+                onInspectSlot = onInspectSlot,
+                onNavigateWarehouse = onOpenWarehouse,
+                onNavigateQa = onOpenQaTab,
+                onNavigateTemplates = onOpenTemplates,
+                onNavigateServer = onOpenSettings,
+                onCaseLookupInputChange = onCaseLookupInputChange,
+                onLookupCaseAndAutoPreview = onLookupCaseAndAutoPreview
+            )
+        }
+
         if (uiState.isMobileSimpleMode) {
             // ==================== APP-ICON MOBILE AUTO-PROGRESS MODE ====================
             item {
@@ -838,12 +893,15 @@ fun DashboardScreen(
         // First-Post Quality Preview + Court Basics + 1-Tap Test Publish Card
         if (selectedSlot != null) {
             item {
-                val archivePreview = remember(selectedSlot.auctionCase.caseId, selectedSlot.courtPhotoUrls, selectedSlot.visitRecords) {
-                    CourtEvidenceRecorder.recordFullArchive(
-                        auction = selectedSlot.auctionCase,
-                        courtPhotoUrls = selectedSlot.courtPhotoUrls,
-                        customVisitRecords = selectedSlot.visitRecords
-                    )
+                val archivePreview = remember(
+                    selectedSlot.postId,
+                    selectedSlot.courtPhotoUrls,
+                    selectedSlot.visitRecords,
+                    selectedSlot.serverRegistryGapGu,
+                    selectedSlot.serverRegistryEulGu,
+                    selectedSlot.serverCourtDocuments
+                ) {
+                    CourtEvidenceRecorder.recordFullArchiveForSlot(selectedSlot)
                 }
                 val realPhotos = archivePreview.photos.count { it.imageUrl.isNotBlank() }
                 StudioCard(
@@ -927,27 +985,50 @@ fun DashboardScreen(
             }
         }
 
-        // 3. Clean Queue List (Only essentials visible)
+        // 3. Clean Queue List (Only real server/user cases)
         item {
             SectionHeader(
-                title = "자동 예약 · 등록 목록 (${uiState.slots.size}건)",
-                subtitle = "일일 ${dailyCount}건 분산 · 95점+ 통과 원고만 등록"
+                title = "실매물 예약 · 등록 목록 (${uiState.slots.size}건)",
+                subtitle = "가짜/더미 데이터 0건 · 딱찰 서버 조회 및 실사건만 연결",
+                icon = Icons.Filled.Gavel,
+                easyGuide = "카드를 눌러 완성된 블로그 글을 미리보고, 한 번에 95점+ 교정·예약 등록할 수 있습니다."
             )
         }
 
-        items(uiState.slots, key = { it.postId }) { slot ->
-            SimpleQueueRowCard(
-                slot = slot,
-                config = uiState.config,
-                proFunnel = uiState.proFunnel,
-                isBusy = uiState.isBusy,
-                onPreviewQuality = {
-                    previewModalInitialTab = 0
-                    previewModalSlotId = slot.postId
-                },
-                onRegisterNow = { onAutoFixAndRegisterSlot(slot.postId) },
-                onInspect = { onInspectSlot(slot.postId) }
-            )
+        if (uiState.slots.isEmpty()) {
+            item(key = "empty_real_cases_card") {
+                StudioCard(
+                    borderColor = CloudflareSky.copy(alpha = 0.45f),
+                    modifier = Modifier.testTag("empty_real_cases_card")
+                ) {
+                    Text(
+                        text = "불러온 실제 법원 사건이 아직 없습니다",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = TextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "상단 '법원 사건번호 즉시 조회'에 실제 사건번호(예: 2025타경6297)를 입력하거나 '1. DB 찾기'를 실행하면 경매 사진·조사서·등기부·방문기록을 불러와 칼분석 프리뷰를 자동으로 엽니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+        } else {
+            items(uiState.slots, key = { it.postId }) { slot ->
+                SimpleQueueRowCard(
+                    slot = slot,
+                    config = uiState.config,
+                    proFunnel = uiState.proFunnel,
+                    isBusy = uiState.isBusy,
+                    onPreviewQuality = {
+                        previewModalInitialTab = 0
+                        previewModalSlotId = slot.postId
+                    },
+                    onRegisterNow = { onAutoFixAndRegisterSlot(slot.postId) },
+                    onInspect = { onInspectSlot(slot.postId) }
+                )
+            }
         }
 
         // 4. Collapsible Advanced Tools (Hidden by default to keep screen ultra-simple)
@@ -1054,7 +1135,8 @@ fun DashboardScreen(
             onAutoFixSlot = onAutoFixAndRegisterSlot,
             onPublishSelectedChannelsAndVerify = onPublishSelectedChannelsAndVerify,
             onPublishNaverDirectAndVerify = onPublishNaverDirectAndVerify,
-            onOpenSettings = onOpenSettings
+            onOpenSettings = onOpenSettings,
+            onRefreshCourtEvidence = { caseId -> onLookupCaseAndAutoPreview(caseId, 2) }
         )
     }
 }
@@ -1277,8 +1359,15 @@ private fun SimpleQueueRowCard(
         val reg = RegistryInfographicEngine.buildTemplate(slot.auctionCase)
         Article30PointEvaluator.evaluate(slot, config, proFunnel, reg)
     }
-    val archiveSummary = remember(slot.auctionCase.caseId, slot.courtPhotoUrls, slot.visitRecords) {
-        CourtEvidenceRecorder.recordFullArchive(slot.auctionCase, slot.courtPhotoUrls, slot.visitRecords)
+    val archiveSummary = remember(
+        slot.postId,
+        slot.courtPhotoUrls,
+        slot.visitRecords,
+        slot.serverRegistryGapGu,
+        slot.serverRegistryEulGu,
+        slot.serverCourtDocuments
+    ) {
+        CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
     }
     val realPhotoCount = archiveSummary.photos.count { it.imageUrl.isNotBlank() }
     val scoreColor = if (scoreResult.eligibleForRegistration) MintSecondary else TistoryAmber
@@ -1418,20 +1507,28 @@ private fun AddCrawledCaseDialog(
         publishDate: String
     ) -> Unit
 ) {
-    var caseId by remember { mutableStateOf("2026타경3318") }
-    var courtName by remember { mutableStateOf("서울중앙지방법원") }
-    var address by remember { mutableStateOf("서울특별시 서초구 반포동 아크로리버파크") }
+    var caseId by remember { mutableStateOf("") }
+    var courtName by remember { mutableStateOf("") }
+    var address by remember { mutableStateOf("") }
     var selectedType by remember { mutableStateOf(PropertyType.APT_OFFICETEL) }
-    var appraisalMan by remember { mutableStateOf("320000") }
-    var minBidMan by remember { mutableStateOf("204800") }
-    var baseRightDate by remember { mutableStateOf("2021-04-19") }
-    var assumedRights by remember { mutableStateOf("말소기준권리 이후 후순위 소멸, 관리비 체납 현장 확인") }
-    var publishDate by remember { mutableStateOf("2026-11-23") }
+    var appraisalMan by remember { mutableStateOf("") }
+    var minBidMan by remember { mutableStateOf("") }
+    var baseRightDate by remember { mutableStateOf("") }
+    var assumedRights by remember { mutableStateOf("") }
+    var publishDate by remember { mutableStateOf(PostAuctionFollowUpEngine.currentIsoDate()) }
+
+    val appraisalVal = appraisalMan.toLongOrNull() ?: 0L
+    val minBidVal = minBidMan.toLongOrNull() ?: 0L
+    val canSubmit = caseId.isNotBlank() &&
+        courtName.isNotBlank() &&
+        address.isNotBlank() &&
+        appraisalVal > 0L &&
+        minBidVal > 0L
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = NavySurface,
-        title = { Text("신규 경매 물건 추가", color = TextPrimary) },
+        title = { Text("실제 경매 물건 수동 입력", color = TextPrimary) },
         text = {
             Column(
                 modifier = Modifier
@@ -1451,9 +1548,26 @@ private fun AddCrawledCaseDialog(
                         )
                     }
                 }
-                OutlinedTextField(value = caseId, onValueChange = { caseId = it }, label = { Text("사건번호") }, singleLine = true)
-                OutlinedTextField(value = courtName, onValueChange = { courtName = it }, label = { Text("법원명") }, singleLine = true)
-                OutlinedTextField(value = address, onValueChange = { address = it }, label = { Text("소재지/물건명") })
+                OutlinedTextField(
+                    value = caseId,
+                    onValueChange = { caseId = it },
+                    label = { Text("사건번호 (필수)") },
+                    placeholder = { Text("법원 실제 사건번호 입력") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = courtName,
+                    onValueChange = { courtName = it },
+                    label = { Text("관할 법원명 (필수)") },
+                    placeholder = { Text("예: 부산지방법원 동부지원") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = address,
+                    onValueChange = { address = it },
+                    label = { Text("소재지/물건명 (필수)") },
+                    placeholder = { Text("등기부 기준 실제 소재지 입력") }
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = appraisalMan,
@@ -1477,6 +1591,7 @@ private fun AddCrawledCaseDialog(
                         value = baseRightDate,
                         onValueChange = { baseRightDate = it },
                         label = { Text("말소기준권리일") },
+                        placeholder = { Text("YYYY-MM-DD") },
                         modifier = Modifier.weight(1f),
                         singleLine = true
                     )
@@ -1488,24 +1603,30 @@ private fun AddCrawledCaseDialog(
                         singleLine = true
                     )
                 }
-                OutlinedTextField(value = assumedRights, onValueChange = { assumedRights = it }, label = { Text("인수권리 및 특이사항") })
+                OutlinedTextField(
+                    value = assumedRights,
+                    onValueChange = { assumedRights = it },
+                    label = { Text("인수권리 및 특이사항") },
+                    placeholder = { Text("매각물건명세서 확인 내역 입력") }
+                )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     onConfirm(
-                        caseId,
-                        courtName,
-                        address,
+                        caseId.trim(),
+                        courtName.trim(),
+                        address.trim(),
                         selectedType,
-                        appraisalMan.toLongOrNull() ?: 320000L,
-                        minBidMan.toLongOrNull() ?: 204800L,
-                        baseRightDate,
-                        assumedRights,
-                        publishDate
+                        appraisalVal,
+                        minBidVal,
+                        baseRightDate.trim().ifBlank { "확인 필요" },
+                        assumedRights.trim().ifBlank { "등기부·매각물건명세서 실데이터 대조 필요" },
+                        publishDate.trim()
                     )
                 },
+                enabled = canSubmit,
                 colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
             ) {
                 Text("생성 및 예약")

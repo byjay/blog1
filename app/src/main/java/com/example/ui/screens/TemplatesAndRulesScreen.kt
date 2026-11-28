@@ -18,10 +18,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -128,7 +130,9 @@ fun TemplatesAndRulesScreen(
         item {
             SectionHeader(
                 title = "물건별 템플릿 · 저품질 방지 가이드 스튜디오",
-                subtitle = "DataStore 로컬 템플릿 · 검색엔진 저품질 차단 가이드 및 SEO 체크리스트"
+                subtitle = "DataStore 로컬 템플릿 · 검색엔진 저품질 차단 가이드 및 SEO 체크리스트",
+                icon = Icons.Filled.Tune,
+                easyGuide = "아파트·빌라·토지 등 물건별 글 양식과 검색엔진 저품질 차단 규칙을 쉽게 고르고 켤 수 있습니다."
             )
             Spacer(modifier = Modifier.height(10.dp))
             Row(
@@ -383,7 +387,9 @@ fun TemplatesAndRulesScreen(
         item {
             SectionHeader(
                 title = "발행·세션 감사 로그 (publish_logs)",
-                subtitle = "3채널 발행 URL 및 CAPTCHA handOff 이력"
+                subtitle = "3채널 발행 URL 및 CAPTCHA handOff 이력",
+                icon = Icons.AutoMirrored.Filled.ReceiptLong,
+                easyGuide = "네이버·티스토리·자체웹 실제 발행 결과와 보안 확인 이력을 순서대로 보여줍니다."
             )
         }
         items(uiState.publishLogs, key = { it.logId }) { log ->

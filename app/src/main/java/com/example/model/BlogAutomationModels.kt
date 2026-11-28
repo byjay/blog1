@@ -189,7 +189,10 @@ data class GeneratedPostSlot(
     val ddakchalAnalysisData: DdakchalBlogAnalysisData? = null,
     val courtPhotoUrls: List<String> = emptyList(),
     val visitRecords: List<FieldVisitRecord> = emptyList(),
-    val serverUpdatedAt: String = ""
+    val serverUpdatedAt: String = "",
+    val serverRegistryGapGu: List<RegistryVisualNode> = emptyList(),
+    val serverRegistryEulGu: List<RegistryVisualNode> = emptyList(),
+    val serverCourtDocuments: List<CourtDocumentRecord> = emptyList()
 )
 
 data class PublishLogEntry(
@@ -613,6 +616,28 @@ data class CourtPhotoEvidence(
     val imageUrl: String = ""
 )
 
+data class CourtSharpDiscrepancyCheck(
+    val id: String,
+    val axisTitle: String,
+    val documentsCompared: String,
+    val verdictBadge: String,
+    val isAlert: Boolean,
+    val findingDetail: String,
+    val actionDirective: String
+)
+
+data class CourtSharpAnalysisReport(
+    val caseId: String,
+    val sharpGradeBadge: String,
+    val executiveVerdict: String,
+    val absorbedCostKrw: Long,
+    val totalAcquisitionCostKrw: Long,
+    val checks: List<CourtSharpDiscrepancyCheck>,
+    val killerTrapPoints: List<String>,
+    val authorityPromoHeadline: String,
+    val analyzedAt: String
+)
+
 data class CourtFullArchiveRecord(
     val caseId: String,
     val courtName: String,
@@ -628,7 +653,8 @@ data class CourtFullArchiveRecord(
     val rightsVerdictSummary: String,
     val assumedCostSummary: String,
     val recordedAt: String,
-    val visitRecords: List<FieldVisitRecord> = emptyList()
+    val visitRecords: List<FieldVisitRecord> = emptyList(),
+    val sharpAnalysis: CourtSharpAnalysisReport? = null
 )
 
 data class AiAutoFixSuggestion(
@@ -1113,4 +1139,68 @@ data class LowQualityRiskReport(
     val triggeredAlerts: List<String>,
     val recoveryActions: List<String>,
     val evaluatedAt: String
+)
+
+// ==================== Todak/Ddakchal Top Admin & Server DB Crawl Engine Models ====================
+
+enum class AdminPipelineStageStatus(val label: String) {
+    IDLE("대기"),
+    RUNNING("실행중"),
+    SUCCESS("완료"),
+    WARN("부분완료"),
+    ERROR("오류")
+}
+
+data class AdminPipelineStepLog(
+    val stepIndex: Int,
+    val title: String,
+    val endpoint: String,
+    val status: AdminPipelineStageStatus,
+    val httpCode: Int = 0,
+    val latencyMs: Long = 0L,
+    val detail: String
+)
+
+data class ServerDbTableInfo(
+    val sourceName: String,
+    val tableOrEndpoint: String,
+    val rowCount: Int,
+    val httpStatusCode: Int,
+    val sampleColumns: List<String>,
+    val statusDetail: String
+)
+
+data class ServerDbDiscoveredItem(
+    val recordId: String,
+    val dedupKey: String,
+    val caseId: String,
+    val courtName: String,
+    val address: String,
+    val propertyType: PropertyType,
+    val appraisalKrw: Long,
+    val minBidKrw: Long,
+    val photoCount: Int,
+    val visitCount: Int,
+    val hasAnalysisData: Boolean,
+    val sourceOrigin: String,
+    val updatedAt: String,
+    val slot: GeneratedPostSlot
+)
+
+data class TodakAdminConsoleState(
+    val selectedRegions: List<String> = listOf("서울", "경기"),
+    val selectedCategoryFilter: String = "",
+    val searchQuery: String = "",
+    val crawlLimit: Int = 5,
+    val isRunning: Boolean = false,
+    val currentActionLabel: String = "",
+    val discoveredTables: List<ServerDbTableInfo> = emptyList(),
+    val discoveredItems: List<ServerDbDiscoveredItem> = emptyList(),
+    val generatedPostIds: List<String> = emptyList(),
+    val stepLogs: List<AdminPipelineStepLog> = emptyList(),
+    val d1TablesRaw: List<String> = emptyList(),
+    val lastUpdatedAt: String = "",
+    val summaryMessage: String = "최상단 관리자 콘솔 준비됨 · 서버 DB 조회 및 딱찰 크롤링 엔진 실행 가능",
+    val caseLookupInput: String = "",
+    val caseLookupStatus: String = ""
 )

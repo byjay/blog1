@@ -3,13 +3,13 @@ package com.example
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import com.example.data.PostWarehouseStore
 import com.example.engine.Article30PointEvaluator
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.RegistryInfographicEngine
 import com.example.model.ChannelPlatform
 import com.example.model.ProFunnelConfig
 import com.example.model.RegistryInfographicTemplateType
 import com.example.model.RegistryNodeTone
 import com.example.model.ServerAutomationConfig
+import com.example.model.WarehouseArticle
 import com.example.model.WarehouseArticleStatus
 import com.example.model.WritingActivityLog
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,7 +42,7 @@ class WarehouseAndRegistryTemplateTest {
 
     @Test
     fun registryInfographicEngine_buildsAll4TemplatesWithOwnershipGapGuAndEulGu() {
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(ServerAutomationConfig())
+        val slots = TestFixtures.sampleSlots(ServerAutomationConfig())
         val seniorTenantCase = slots.first {
             it.auctionCase.assumedRightsText.contains("선순위") && it.auctionCase.assumedRightsText.contains("인수")
         }.auctionCase
@@ -64,7 +64,7 @@ class WarehouseAndRegistryTemplateTest {
     fun article30PointEvaluator_enforcesExact30CriteriaAnd95PointRegistrationGate() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel)
+        val slots = TestFixtures.sampleSlots(cfg, funnel)
 
         // 1. Clean slots from engine must score >= 95 and pass all 30-item structural checks
         slots.forEach { slot ->
@@ -101,14 +101,38 @@ class WarehouseAndRegistryTemplateTest {
             val store = createWarehouseStore(this)
             val initial = store.snapshotFlow.first()
 
-            assertEquals(5, initial.articles.size)
-            assertEquals(5, initial.writingLogs.size)
-            assertEquals(7, initial.visitorLogs.size)
-            assertTrue(initial.articles.all { it.evaluation.eligibleForRegistration })
+            // Zero fake seed: initial warehouse must be completely empty
+            assertEquals(0, initial.articles.size)
+            assertEquals(0, initial.writingLogs.size)
+            assertEquals(0, initial.visitorLogs.size)
 
-            val target = initial.articles.last()
-            assertEquals(WarehouseArticleStatus.STORED_READY, target.warehouseStatus)
-            val viewsBefore = initial.visitorLogs.first().totalViews
+            val cfg = ServerAutomationConfig()
+            val funnel = ProFunnelConfig()
+            val sampleSlot = TestFixtures.sampleSlots(cfg, funnel).first()
+            val reg = RegistryInfographicEngine.buildTemplate(sampleSlot.auctionCase)
+            val eval = Article30PointEvaluator.evaluate(sampleSlot, cfg, funnel, reg)
+            val target = WarehouseArticle(
+                warehouseId = "wh-${sampleSlot.auctionCase.dedupKey}",
+                slot = sampleSlot,
+                evaluation = eval,
+                registryInfographic = reg,
+                warehouseStatus = WarehouseArticleStatus.STORED_READY,
+                createdAt = "2026-11-22 12:00:00"
+            )
+            val initLog = WritingActivityLog(
+                logId = "wlog-test-init",
+                warehouseId = target.warehouseId,
+                caseId = sampleSlot.auctionCase.caseId,
+                actionTitle = "실사건 테스트 보관",
+                score = eval.totalScore,
+                passedGate95 = eval.eligibleForRegistration,
+                detail = "${eval.passedCount}/30 통과",
+                timestamp = "2026-11-22 12:00:00"
+            )
+            val afterUpsert = store.upsertArticle(target, initLog)
+            assertEquals(1, afterUpsert.articles.size)
+            assertEquals(1, afterUpsert.writingLogs.size)
+            assertEquals(WarehouseArticleStatus.STORED_READY, afterUpsert.articles.first().warehouseStatus)
 
             val regLog = WritingActivityLog(
                 logId = "wlog-test-reg",
@@ -128,17 +152,14 @@ class WarehouseAndRegistryTemplateTest {
             val registeredItem = afterReg.articles.first { it.warehouseId == target.warehouseId }
             assertEquals(WarehouseArticleStatus.REGISTERED, registeredItem.warehouseStatus)
             assertNotNull(registeredItem.registeredAt)
-            assertTrue(afterReg.visitorLogs.first().totalViews > viewsBefore)
+            assertEquals(2, afterReg.writingLogs.size)
 
-            // Refresh visitor telemetry increases today's views
-            val beforeRefresh = afterReg.visitorLogs.first().totalViews
-            val afterRefresh = store.refreshVisitorTelemetry(100, 50, 75)
-            assertEquals(beforeRefresh + 225, afterRefresh.visitorLogs.first().totalViews)
-
-            // Delete and reset
+            // Delete and reset back to zero-fake empty state
             val afterDelete = store.deleteArticle(target.warehouseId)
-            assertEquals(4, afterDelete.articles.size)
+            assertEquals(0, afterDelete.articles.size)
             val reset = store.resetToDefaults()
-            assertEquals(5, reset.articles.size)
+            assertEquals(0, reset.articles.size)
+            assertEquals(0, reset.writingLogs.size)
+            assertEquals(0, reset.visitorLogs.size)
         }
 }

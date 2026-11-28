@@ -3,205 +3,44 @@ package com.example.engine
 import com.example.model.AuctionCaseIntel
 import com.example.model.ChannelPlatform
 import com.example.model.ChannelVariantContent
+import com.example.model.CourtDocumentRecord
+import com.example.model.FieldVisitRecord
 import com.example.model.GeneratedPostSlot
 import com.example.model.InfographicCardSpec
 import com.example.model.PostStatus
 import com.example.model.ProFunnelConfig
 import com.example.model.PropertyType
 import com.example.model.PublishLogEntry
+import com.example.model.RegistryVisualNode
 import com.example.model.ServerAutomationConfig
 
 object DefaultSpecDataFactory {
 
     fun buildInitialDaily5Slots(
-        config: ServerAutomationConfig,
-        proFunnel: ProFunnelConfig = ProFunnelConfig()
-    ): List<GeneratedPostSlot> {
-        val cases = listOf(
-            AuctionCaseIntel(
-                caseId = "2025타경6297",
-                dedupKey = "ca-20250118006297-1",
-                courtName = "부산지방법원 동부지원",
-                address = "부산광역시 기장군 정관읍 정관롯데캐슬2차 104동 1203호",
-                propertyType = PropertyType.APT_OFFICETEL,
-                appraisalPriceKrw = 420_000_000L,
-                minBidPriceKrw = 268_800_000L,
-                winningPriceKrw = null,
-                bidCount = 2,
-                discountRatePct = 64,
-                auctionDate = "2026-12-03",
-                baseRightDate = "2021-06-15",
-                dividendDeadline = "2025-11-28",
-                claimAmountKrw = 195_000_000L,
-                depositRatePct = 10,
-                possessionSummary = "채무자 겸 소유자 세대 점유(임차인 없음)",
-                tenantSummary = "전입세대열람내역 소유자 세대 단독 등재, 배당요구 임차인 없음",
-                assumedRightsText = "말소기준권리 2021-06-15 근저당 이후 전부 소멸, 공용관리비 체납 142만원 확인",
-                specialCheckNotice = "대법원 2001다8677 판례상 체납 공용부분 관리비(3년 원금) 낙찰자 승계 여부 입찰 당일 관리사무소 재확인",
-                recentRealTradeMedianKrw = 375_000_000L,
-                stats3yRatePct = 78.4,
-                clicksLast7d = 612,
-                conservativeBidKrw = 289_500_000L,
-                balancedBidKrw = 304_200_000L,
-                aggressiveBidKrw = 318_000_000L
-            ),
-            AuctionCaseIntel(
-                caseId = "2025타경11842",
-                dedupKey = "ca-20250204011842-1",
-                courtName = "서울남부지방법원",
-                address = "서울특별시 강서구 화곡동 다세대주택 3층 302호",
-                propertyType = PropertyType.VILLA_MULTIFAMILY,
-                appraisalPriceKrw = 295_000_000L,
-                minBidPriceKrw = 151_040_000L,
-                winningPriceKrw = null,
-                bidCount = 3,
-                discountRatePct = 51,
-                auctionDate = "2026-12-04",
-                baseRightDate = "2022-03-11",
-                dividendDeadline = "2025-10-17",
-                claimAmountKrw = 210_000_000L,
-                depositRatePct = 10,
-                possessionSummary = "선순위 임차세대 점유 (말소기준일 이전 대항력 요건 구비·세부일자 비공개)",
-                tenantSummary = "말소기준권리(2022-03-11)보다 선순위 임차세대 보증금 1억 8,000만원, 배당요구 미신청",
-                assumedRightsText = "선순위 임차세대 대항력 유지 및 배당요구 없음 → 보증금 1억 8,000만원 전액 인수 위험",
-                specialCheckNotice = "전세사기 예방 필수 대조 항목: 배당요구 미필 선순위 임차인 보증금 인수분 반영 시 실투자금 급증 주의",
-                recentRealTradeMedianKrw = 265_000_000L,
-                stats3yRatePct = 66.8,
-                clicksLast7d = 488,
-                conservativeBidKrw = 151_500_000L,
-                balancedBidKrw = 158_000_000L,
-                aggressiveBidKrw = 164_000_000L
-            ),
-            AuctionCaseIntel(
-                caseId = "2025타경8831",
-                dedupKey = "ca-20250129008831-1",
-                courtName = "수원지방법원 성남지원",
-                address = "경기도 성남시 분당구 정자동 근린상가 1층 108호",
-                propertyType = PropertyType.COMMERCIAL_RETAIL,
-                appraisalPriceKrw = 780_000_000L,
-                minBidPriceKrw = 382_200_000L,
-                winningPriceKrw = null,
-                bidCount = 2,
-                discountRatePct = 49,
-                auctionDate = "2026-12-08",
-                baseRightDate = "2020-09-22",
-                dividendDeadline = "2025-11-12",
-                claimAmountKrw = 430_000_000L,
-                depositRatePct = 10,
-                possessionSummary = "현황 공실 상태(최근까지 카페 운영 후 폐업)",
-                tenantSummary = "사업자등록상 후순위 임차인 퇴거 확인, 상임법 환산보증금 인수분 없음",
-                assumedRightsText = "장기공실에 따른 체납 공용관리비 680만원 확인, 권리 인수 사항 없음",
-                specialCheckNotice = "반경 500m 오피스·주거 배후세대 대비 1층 공실률 및 예상 CapRate 6.1% 수준 검토 필요",
-                recentRealTradeMedianKrw = 640_000_000L,
-                stats3yRatePct = 62.5,
-                clicksLast7d = 734,
-                conservativeBidKrw = 398_000_000L,
-                balancedBidKrw = 421_000_000L,
-                aggressiveBidKrw = 445_000_000L
-            ),
-            AuctionCaseIntel(
-                caseId = "2024타경4507",
-                dedupKey = "ca-20240130004507-1",
-                courtName = "대구지방법원 포항지원",
-                address = "경상북도 포항시 북구 흥해읍 토지(전) 일괄매각",
-                propertyType = PropertyType.LAND_FARMLAND,
-                appraisalPriceKrw = 4_864_120_000L,
-                minBidPriceKrw = 2_383_420_000L,
-                winningPriceKrw = null,
-                bidCount = 2,
-                discountRatePct = 49,
-                auctionDate = "2026-12-09",
-                baseRightDate = "2019-12-04",
-                dividendDeadline = "2025-09-30",
-                claimAmountKrw = 1_850_000_000L,
-                depositRatePct = 10,
-                possessionSummary = "지목 전(농지), 현황 휴경지 및 일부 비닐하우스 소재",
-                tenantSummary = "등기부상 임차권 및 지상권 등기 없음, 제시외 비닐하우스 매각 제외 여부 확인",
-                assumedRightsText = "4m 이상 현황도로 접면(맹지 아님), 분묘기지권 기일 내 신고 없음",
-                specialCheckNotice = "농지취득자격증명원 매각결정기일까지 미제출 시 입찰보증금 10% 전액 몰수 주의",
-                recentRealTradeMedianKrw = 3_920_000_000L,
-                stats3yRatePct = 59.3,
-                clicksLast7d = 845,
-                conservativeBidKrw = 2_410_000_000L,
-                balancedBidKrw = 2_540_000_000L,
-                aggressiveBidKrw = 2_690_000_000L
-            ),
-            AuctionCaseIntel(
-                caseId = "2025타경9405",
-                dedupKey = "ca-20250211009405-1",
-                courtName = "인천지방법원",
-                address = "인천광역시 서구 오류동 일반공업지역 공장 및 기계기구 일괄",
-                propertyType = PropertyType.FACTORY_SPECIAL,
-                appraisalPriceKrw = 1_620_000_000L,
-                minBidPriceKrw = 1_134_000_000L,
-                winningPriceKrw = null,
-                bidCount = 1,
-                discountRatePct = 70,
-                auctionDate = "2026-12-10",
-                baseRightDate = "2021-08-19",
-                dividendDeadline = "2025-12-01",
-                claimAmountKrw = 980_000_000L,
-                depositRatePct = 10,
-                possessionSummary = "채무자 법인 자가 가동 중단 상태, 호이스트 5톤 2기 설치",
-                tenantSummary = "유치권 신고서(설비 공사업체 비식별, 1억 4,000만원) 제출 — 점유 개시 시점 말소기준권리 이후",
-                assumedRightsText = "공장저당법 제6조 기계기구 7점 목록 감정평가 포함, 대항력 있는 유치권 성립 불투명",
-                specialCheckNotice = "40ft 대형 화물차 진입 도로폭 확보(8m) 및 계약전력 250kW, 산업단지 입주업종 코드 적합 확인 필수",
-                recentRealTradeMedianKrw = 1_410_000_000L,
-                stats3yRatePct = 71.2,
-                clicksLast7d = 529,
-                conservativeBidKrw = 1_145_000_000L,
-                balancedBidKrw = 1_195_000_000L,
-                aggressiveBidKrw = 1_240_000_000L
-            )
-        )
-
-        val jitterOffsets = listOf(
-            Triple("08:17:23", "09:04:41", "10:29:15"),
-            Triple("10:42:11", "11:31:08", "12:58:44"),
-            Triple("13:14:37", "14:02:19", "15:26:52"),
-            Triple("15:41:09", "16:28:33", "17:49:18"),
-            Triple("16:12:46", "17:03:22", "18:21:05")
-        )
-
-        return cases.mapIndexed { idx, auction ->
-            val variants = buildDistinct3ChannelVariants(auction, idx, config, proFunnel = proFunnel)
-            val (tCf, tTs, tNv) = jitterOffsets[idx]
-            val scheduled = mapOf(
-                ChannelPlatform.CLOUDFLARE to "2026-11-22 $tCf",
-                ChannelPlatform.TISTORY to "2026-11-22 $tTs",
-                ChannelPlatform.NAVER to "2026-11-22 $tNv"
-            )
-            val qaReport = QaVerificationEngine.auditSlot(auction, variants, scheduled, config)
-            val status = PostStatus.DRAFT
-            val publishedUrls = emptyMap<ChannelPlatform, String>()
-            GeneratedPostSlot(
-                postId = "post-${auction.dedupKey}",
-                queueId = "q-20261122-${idx + 1}",
-                slotIndex = idx + 1,
-                publishDate = "2026-11-22",
-                auctionCase = auction,
-                variants = variants,
-                scheduledTimes = scheduled,
-                status = status,
-                qaReport = qaReport,
-                publishedUrls = publishedUrls,
-                sourceLabel = "로컬 초안 풀 (발행 전)"
-            )
-        }
-    }
+        @Suppress("UNUSED_PARAMETER") config: ServerAutomationConfig,
+        @Suppress("UNUSED_PARAMETER") proFunnel: ProFunnelConfig = ProFunnelConfig()
+    ): List<GeneratedPostSlot> = emptyList()
 
     fun buildDistinct3ChannelVariants(
         auction: AuctionCaseIntel,
         seedIndex: Int,
         config: ServerAutomationConfig,
         rewriteSalt: String = "",
-        proFunnel: ProFunnelConfig = ProFunnelConfig()
+        proFunnel: ProFunnelConfig = ProFunnelConfig(),
+        serverGapGu: List<RegistryVisualNode> = emptyList(),
+        serverEulGu: List<RegistryVisualNode> = emptyList(),
+        serverDocuments: List<CourtDocumentRecord> = emptyList(),
+        visitRecords: List<FieldVisitRecord> = emptyList()
     ): Map<ChannelPlatform, ChannelVariantContent> = buildSanitized3ChannelVariants(
         auction = PrivacySanitizerEngine.sanitizeAuctionForBlog(auction),
         seedIndex = seedIndex,
         config = config,
         rewriteSalt = rewriteSalt,
-        proFunnel = proFunnel
+        proFunnel = proFunnel,
+        serverGapGu = serverGapGu,
+        serverEulGu = serverEulGu,
+        serverDocuments = serverDocuments,
+        visitRecords = visitRecords
     )
 
     private fun formatManWonSpaced(krw: Long): String =
@@ -219,7 +58,11 @@ object DefaultSpecDataFactory {
         seedIndex: Int,
         config: ServerAutomationConfig,
         rewriteSalt: String = "",
-        proFunnel: ProFunnelConfig = ProFunnelConfig()
+        proFunnel: ProFunnelConfig = ProFunnelConfig(),
+        serverGapGu: List<RegistryVisualNode> = emptyList(),
+        serverEulGu: List<RegistryVisualNode> = emptyList(),
+        serverDocuments: List<CourtDocumentRecord> = emptyList(),
+        visitRecords: List<FieldVisitRecord> = emptyList()
     ): Map<ChannelPlatform, ChannelVariantContent> {
         val region = auction.address.split(" ").take(2).joinToString(" ")
         val proReport = ProAnalysisAndPhotoGuideEngine.buildProReport(auction)
@@ -256,6 +99,57 @@ object DefaultSpecDataFactory {
         val sNv = ((seedIndex % 12) + 12) % 12
         val sTs = (((seedIndex * 5 + 3) % 12) + 12) % 12
         val sCf = (((seedIndex * 7 + 5) % 12) + 12) % 12
+
+        val sharpArchiveSnapshot = CourtEvidenceRecorder.recordFullArchive(
+            auction = auction,
+            customVisitRecords = visitRecords,
+            serverGapGu = serverGapGu,
+            serverEulGu = serverEulGu,
+            serverDocuments = serverDocuments
+        )
+        val sharpReport = sharpArchiveSnapshot.sharpAnalysis ?: CourtSharpAnalyzer.analyze(
+            auction = auction,
+            photos = sharpArchiveSnapshot.photos,
+            documents = sharpArchiveSnapshot.documents,
+            visitRecords = sharpArchiveSnapshot.visitRecords,
+            registryGapGu = sharpArchiveSnapshot.registryGapGu,
+            registryEulGu = sharpArchiveSnapshot.registryEulGu,
+            proReport = proReport
+        )
+        val gapGuCount = sharpArchiveSnapshot.registryGapGu.size
+        val eulGuCount = sharpArchiveSnapshot.registryEulGu.size
+        val docCount = sharpArchiveSnapshot.documents.size
+        val visitCount = sharpArchiveSnapshot.visitRecords.size
+        val naverSharpShowcase = CourtSharpAnalyzer.buildBlogShowcaseSnippet(
+            auction = auction,
+            report = sharpReport,
+            platform = ChannelPlatform.NAVER,
+            styleIndex = sNv,
+            gapGuCount = gapGuCount,
+            eulGuCount = eulGuCount,
+            docCount = docCount,
+            visitCount = visitCount
+        )
+        val tistorySharpShowcase = CourtSharpAnalyzer.buildBlogShowcaseSnippet(
+            auction = auction,
+            report = sharpReport,
+            platform = ChannelPlatform.TISTORY,
+            styleIndex = sTs,
+            gapGuCount = gapGuCount,
+            eulGuCount = eulGuCount,
+            docCount = docCount,
+            visitCount = visitCount
+        )
+        val cloudflareSharpShowcase = CourtSharpAnalyzer.buildBlogShowcaseSnippet(
+            auction = auction,
+            report = sharpReport,
+            platform = ChannelPlatform.CLOUDFLARE,
+            styleIndex = sCf,
+            gapGuCount = gapGuCount,
+            eulGuCount = eulGuCount,
+            docCount = docCount,
+            visitCount = visitCount
+        )
 
         val studyPool = LegalTermStudyEngine.masterTerms
         val studyTerm = if (seedIndex == 0) {
@@ -427,6 +321,7 @@ object DefaultSpecDataFactory {
             appendLine()
             appendLine(naverSectionHeaders[3])
             appendLine(naverBidLines[sNv])
+            appendLine(naverSharpShowcase)
             appendLine(naverClosingCheckLines[sNv])
             appendLine("$naverTransitionLines $cta")
             appendLine(studyTerm.blogStudyOneLiner)
@@ -623,6 +518,8 @@ object DefaultSpecDataFactory {
             appendLine(tsSec7[sTs])
             appendLine()
             appendLine(tsSec8[sTs])
+            appendLine()
+            appendLine(tistorySharpShowcase)
             append(tistoryFunnelText)
         }.trim()
 
@@ -1006,6 +903,7 @@ object DefaultSpecDataFactory {
             appendLine(cfShotLine)
             appendLine(cfBandLine)
             appendLine(cfFaqBlocks[sCf])
+            appendLine(cloudflareSharpShowcase)
             appendLine("* 법리 참고(${studyTerm.category.label}): ${studyTerm.userQuestionExample} (${studyTerm.statuteRef})")
             appendLine(cfAuditNotes)
             append(cfFunnelText)

@@ -1,5 +1,6 @@
 package com.example.data
 
+import com.example.engine.HtmlExportEngine
 import com.example.engine.LegalDoctrineVerifier
 import com.example.engine.PrivacySanitizerEngine
 import com.example.engine.QaVerificationEngine
@@ -320,6 +321,7 @@ class DirectChannelPublishClient(
         var relayMsg = ""
 
         if (relayEndpoint.isNotBlank() && nv != null) {
+            val enrichedNaverHtml = HtmlExportEngine.renderArticleBodySnippet(slot, nv, config)
             val payload = RelayPublishPayload(
                 postId = slot.postId,
                 caseId = slot.auctionCase.caseId,
@@ -328,7 +330,7 @@ class DirectChannelPublishClient(
                 categoryName = config.naverCategoryName.ifBlank { "부동산 경매 분석" },
                 title = nv.title,
                 bodyText = nv.bodyText,
-                bodyHtml = nv.bodyHtml,
+                bodyHtml = enrichedNaverHtml,
                 tags = nv.tags,
                 pinnedComment = nv.pinnedCommentSnippet
             )
@@ -428,6 +430,7 @@ class DirectChannelPublishClient(
         var relayCode = 0
         var relayNote = ""
         if (relayEndpoint.isNotBlank() && tsVariant != null) {
+            val enrichedTistoryHtml = HtmlExportEngine.renderArticleBodySnippet(slot, tsVariant, config)
             val payload = RelayPublishPayload(
                 postId = slot.postId,
                 caseId = slot.auctionCase.caseId,
@@ -436,7 +439,7 @@ class DirectChannelPublishClient(
                 categoryName = config.tistoryCategoryName.ifBlank { "경매·권리·세무 리포트" },
                 title = tsVariant.title,
                 bodyText = tsVariant.bodyText,
-                bodyHtml = tsVariant.bodyHtml,
+                bodyHtml = enrichedTistoryHtml,
                 tags = tsVariant.tags,
                 pinnedComment = ""
             )
@@ -494,11 +497,18 @@ class DirectChannelPublishClient(
         if (config.cfAccountId.isNotBlank() && config.cfD1DatabaseId.isNotBlank() && config.cfApiToken.isNotBlank()) {
             val cfVariant = slot.variants[ChannelPlatform.CLOUDFLARE]
             if (cfVariant != null) {
+                val enrichedCfHtml = HtmlExportEngine.renderArticleBodySnippet(slot, cfVariant, config)
+                val metaJson = org.json.JSONObject().apply {
+                    put("slug", slot.auctionCase.dedupKey)
+                    put("tags", org.json.JSONArray(cfVariant.tags))
+                    put("metaDescription", cfVariant.metaDescription)
+                    put("jsonLd", cfVariant.jsonLdSchema)
+                }.toString()
                 val res = d1Api.executeCloudflareD1Query(
                     accountId = config.cfAccountId,
                     databaseId = config.cfD1DatabaseId,
                     apiToken = config.cfApiToken,
-                    sql = "INSERT OR REPLACE INTO generated_posts (post_id, queue_id, case_id, property_type, blog_category, platform, title, body_html, body_markdown, status, scheduled_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    sql = "INSERT OR REPLACE INTO generated_posts (post_id, queue_id, case_id, property_type, blog_category, platform, title, body_html, body_markdown, meta_json, status, scheduled_for) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
                     params = listOf(
                         "${slot.postId}-cloudflare",
                         slot.queueId,
@@ -507,8 +517,9 @@ class DirectChannelPublishClient(
                         slot.auctionCase.propertyType.blogCategory,
                         ChannelPlatform.CLOUDFLARE.code,
                         cfVariant.title,
-                        cfVariant.bodyHtml,
+                        enrichedCfHtml,
                         cfVariant.bodyText,
+                        metaJson,
                         "PUBLISHED",
                         slot.scheduledTimes[ChannelPlatform.CLOUDFLARE] ?: slot.publishDate
                     )
@@ -517,17 +528,21 @@ class DirectChannelPublishClient(
                 d1StatusNote = if (res.isSuccess) "D1 저장 성공 / " else "D1 HTTP ${res.statusCode} / "
             }
         }
-        val checkUrl = if (d1InsertedOk) cfSiteBase else targetUrl
-        val getRes = executeHttpGet(checkUrl)
-        val ok = if (d1InsertedOk) getRes.isSuccess else getRes.isSuccess
+        val getRes = executeHttpGet(targetUrl)
+        val ok = getRes.isSuccess
+        val methodLabel = when {
+            d1InsertedOk && ok -> "CF_D1_UPSERT + HTTP_GET"
+            d1InsertedOk && !ok -> "CF_D1_SAVED_WORKER_ROUTE_NEEDED"
+            else -> "POST_PATH_HTTP_GET_VERIFY"
+        }
         return ChannelDirectPublishOutcome(
             platform = ChannelPlatform.CLOUDFLARE,
             targetUrl = targetUrl,
-            executedMethod = if (d1InsertedOk) "CF_D1_UPSERT + HTTP_GET" else "POST_PATH_HTTP_GET_VERIFY",
+            executedMethod = methodLabel,
             httpStatusCode = getRes.statusCode,
             reachableOk = ok,
             publishedPostUrl = if (ok) targetUrl else "",
-            message = "$d1StatusNote${if (ok) "$checkUrl 응답 정상 (HTTP ${getRes.statusCode})" else "$targetUrl 미게시/응답 실패 (HTTP ${getRes.statusCode}: D1 토큰 설정 또는 Worker 배포 확인)"}"
+            message = "$d1StatusNote${if (ok) "$targetUrl 응답 정상 (HTTP ${getRes.statusCode})" else "$targetUrl 미게시/응답 실패 (HTTP ${getRes.statusCode}: D1 토큰 설정 또는 Worker 배포 확인)"}"
         )
     }
 

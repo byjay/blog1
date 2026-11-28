@@ -201,7 +201,7 @@ class PostWarehouseStore(
         dbAdd: Int,
         proAdd: Int
     ): List<VisitorTrafficLog> {
-        if (logs.isEmpty()) return defaultVisitorLogs()
+        if (logs.isEmpty()) return emptyList()
         val first = logs.first()
         val nv = first.naverViews + naverAdd
         val ts = first.tistoryViews + tsAdd
@@ -222,74 +222,10 @@ class PostWarehouseStore(
     }
 
     companion object {
-        fun buildInitialSeed(): WarehouseSnapshot {
-            val defaultConfig = ServerAutomationConfig()
-            val defaultFunnel = ProFunnelConfig()
-            val initialSlots = DefaultSpecDataFactory.buildInitialDaily5Slots(defaultConfig, defaultFunnel)
-
-            val articles = initialSlots.mapIndexed { idx, slot ->
-                val regInfographic = RegistryInfographicEngine.buildTemplate(
-                    auction = slot.auctionCase,
-                    templateType = RegistryInfographicTemplateType.COMBINED_EXPERT_BOARD
-                )
-                val eval = Article30PointEvaluator.evaluate(
-                    slot = slot,
-                    config = defaultConfig,
-                    proFunnel = defaultFunnel,
-                    registryTemplate = regInfographic
-                )
-                val status = when {
-                    idx == 0 && eval.eligibleForRegistration -> WarehouseArticleStatus.REGISTERED
-                    eval.eligibleForRegistration -> WarehouseArticleStatus.STORED_READY
-                    else -> WarehouseArticleStatus.NEEDS_IMPROVEMENT
-                }
-                WarehouseArticle(
-                    warehouseId = "wh-${slot.auctionCase.dedupKey}",
-                    slot = slot,
-                    evaluation = eval,
-                    registryInfographic = regInfographic,
-                    warehouseStatus = status,
-                    createdAt = "2026-11-22 08:${10 + idx}:15",
-                    registeredAt = if (status == WarehouseArticleStatus.REGISTERED) "2026-11-22 10:29:15" else null,
-                    registeredChannels = if (status == WarehouseArticleStatus.REGISTERED) ChannelPlatform.entries else emptyList(),
-                    accumulatedViews = if (status == WarehouseArticleStatus.REGISTERED) 1_420 else 0,
-                    dbLeadCount = if (status == WarehouseArticleStatus.REGISTERED) 5 else 0,
-                    proClickCount = if (status == WarehouseArticleStatus.REGISTERED) 43 else 0
-                )
-            }
-
-            val writingLogs = articles.mapIndexed { idx, art ->
-                WritingActivityLog(
-                    logId = "wlog-init-${idx + 1}",
-                    warehouseId = art.warehouseId,
-                    caseId = art.slot.auctionCase.caseId,
-                    actionTitle = if (art.warehouseStatus == WarehouseArticleStatus.REGISTERED) {
-                        "창고 입고 → 30항목(${art.evaluation.totalScore}점) 통과 → 3채널 등록 완료"
-                    } else {
-                        "창고 자동 보관 → 30항목(${art.evaluation.totalScore}점) 등록 대기"
-                    },
-                    score = art.evaluation.totalScore,
-                    passedGate95 = art.evaluation.eligibleForRegistration,
-                    detail = "${art.evaluation.passedCount}/30 항목 통과 · 갑구/을구/소유권 도식 포함",
-                    timestamp = art.createdAt
-                )
-            }
-
-            return WarehouseSnapshot(
-                articles = articles,
-                writingLogs = writingLogs,
-                visitorLogs = defaultVisitorLogs()
-            )
-        }
-
-        private fun defaultVisitorLogs(): List<VisitorTrafficLog> = listOf(
-            VisitorTrafficLog("11/22 (오늘)", 1_840, 620, 910, 3_370, 208, 14, 38, 14_019L),
-            VisitorTrafficLog("11/21 (어제)", 1_690, 580, 840, 3_110, 196, 12, 31, 12_937L),
-            VisitorTrafficLog("11/20", 1_520, 510, 760, 2_790, 191, 9, 27, 11_606L),
-            VisitorTrafficLog("11/19", 1_410, 495, 710, 2_615, 184, 8, 22, 10_878L),
-            VisitorTrafficLog("11/18", 1_280, 440, 645, 2_365, 179, 7, 19, 9_838L),
-            VisitorTrafficLog("11/17", 1_190, 410, 590, 2_190, 172, 6, 17, 9_110L),
-            VisitorTrafficLog("11/16", 1_050, 380, 520, 1_950, 168, 5, 14, 8_112L)
+        fun buildInitialSeed(): WarehouseSnapshot = WarehouseSnapshot(
+            articles = emptyList(),
+            writingLogs = emptyList(),
+            visitorLogs = emptyList()
         )
 
         private fun nowTimestamp(): String =

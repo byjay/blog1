@@ -12,7 +12,6 @@ import com.example.data.NaverRealEstateApiClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
 import com.example.engine.Article30PointEvaluator
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.HtmlExportEngine
 import com.example.engine.SecurityAuditEngine
 import com.example.model.AiCaseGeoOptimizationPack
@@ -154,7 +153,7 @@ class SecurityAiSearchHtmlTest {
             tistoryId = "kakao_jay",
             tistoryPw = ""
         )
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cleanCfg)
+        val slots = TestFixtures.sampleSlots(cleanCfg)
 
         // 1. Clean zero-password config yields no leaks and high score (S grade)
         val cleanSummary = SecurityAuditEngine.auditSecurity(
@@ -307,6 +306,18 @@ class SecurityAiSearchHtmlTest {
             aiCaseSearchAdvisor = stubSearchAdvisor
         )
         vm.updateConfig(cfg)
+        val a0 = TestFixtures.sampleAuctions().first()
+        vm.addCustomCrawledPropertyAndSchedule(
+            caseId = a0.caseId,
+            courtName = a0.courtName,
+            address = a0.address,
+            propertyType = a0.propertyType,
+            appraisalManWon = a0.appraisalPriceKrw / 10_000L,
+            minBidManWon = a0.minBidPriceKrw / 10_000L,
+            baseRightDate = a0.baseRightDate,
+            assumedRights = a0.assumedRightsText,
+            publishDate = "2026-11-24"
+        )
 
         val targetCaseId = vm.uiState.value.slots.first().auctionCase.caseId
         vm.searchCaseWithAiAndOptimize(targetCaseId)
@@ -343,6 +354,19 @@ class SecurityAiSearchHtmlTest {
             aiCaseSearchAdvisor = stubSearchAdvisor
         )
         vm.updateConfig(cfg)
+        TestFixtures.sampleAuctions().take(3).forEach { auction ->
+            vm.addCustomCrawledPropertyAndSchedule(
+                caseId = auction.caseId,
+                courtName = auction.courtName,
+                address = auction.address,
+                propertyType = auction.propertyType,
+                appraisalManWon = auction.appraisalPriceKrw / 10_000L,
+                minBidManWon = auction.minBidPriceKrw / 10_000L,
+                baseRightDate = auction.baseRightDate,
+                assumedRights = auction.assumedRightsText,
+                publishDate = "2026-11-24"
+            )
+        }
 
         // Mode 1: 3 distinct auction cases
         vm.generateThreePureHtmlPosts(threeCasesMode = true, preferredChannel = ChannelPlatform.NAVER)

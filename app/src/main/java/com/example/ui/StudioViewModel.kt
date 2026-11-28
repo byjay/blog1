@@ -38,6 +38,8 @@ import com.example.engine.SecurityAuditEngine
 import com.example.engine.SeoGuideEngine
 import com.example.engine.TopicSelectionEngine
 import com.example.engine.WeeklyBatchScheduleEngine
+import com.example.model.AdminPipelineStageStatus
+import com.example.model.AdminPipelineStepLog
 import com.example.model.AiCaseSearchUiState
 import com.example.model.AiEvalUiState
 import com.example.model.AuctionCaseIntel
@@ -80,7 +82,10 @@ import com.example.model.SeoChecklistItem
 import com.example.model.SeoRuleCategory
 import com.example.model.SeoRulePriority
 import com.example.model.ServerAutomationConfig
+import com.example.model.ServerDbDiscoveredItem
+import com.example.model.ServerDbTableInfo
 import com.example.model.ServerTelemetryState
+import com.example.model.TodakAdminConsoleState
 import com.example.model.TopicSelectionBoardState
 import com.example.model.TopicSortCriteria
 import com.example.model.VisitorTrafficLog
@@ -165,6 +170,10 @@ data class StudioUiState(
     val naverPublishStatuses: List<NaverPublishStatusRecord> = emptyList(),
     val naverWriteGuides: List<NaverWriteMethodGuide> = emptyList(),
     val lastAiEngineUsed: String = "1순위 Google Gemini (Firebase AI)",
+    val todakAdmin: TodakAdminConsoleState = TodakAdminConsoleState(),
+    val pendingAutoPreviewSlotId: String? = null,
+    val pendingAutoPreviewTab: Int = 0,
+    val pendingAutoPreviewNonce: Long = 0L,
     val statusMessage: String? = null,
     val errorMessage: String? = null
 )
@@ -183,31 +192,8 @@ class StudioViewModel(
 
     init {
         val initialConfig = ServerAutomationConfig()
-        val initialSlots = DefaultSpecDataFactory.buildInitialDaily5Slots(initialConfig)
+        val initialSlots = emptyList<GeneratedPostSlot>()
         val initialSeed = PostWarehouseStore.buildInitialSeed()
-        val firstSlot = initialSlots.firstOrNull()
-        val firstAuction = firstSlot?.auctionCase
-        val initialInfographic = firstAuction?.let {
-            RegistryInfographicEngine.buildTemplate(it, RegistryInfographicTemplateType.COMBINED_EXPERT_BOARD)
-        }
-        val initialArchive = firstSlot?.let {
-            CourtEvidenceRecorder.recordFullArchive(it.auctionCase, it.courtPhotoUrls, it.visitRecords)
-        }
-        val initialLegalMap = initialSlots.associate { slot ->
-            slot.auctionCase.caseId to LegalDoctrineVerifier.verify(slot.auctionCase)
-        }
-        val initialAttractivenessMap = initialSlots.associate { slot ->
-            val legal = initialLegalMap[slot.auctionCase.caseId] ?: LegalDoctrineVerifier.verify(slot.auctionCase)
-            slot.auctionCase.caseId to InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
-        }
-        val initialDefense = firstSlot?.variants?.get(ChannelPlatform.NAVER)?.let { nv ->
-            QualityDefenseEngine.defendText(
-                rawTitle = nv.title,
-                rawBody = nv.bodyText,
-                channel = ChannelPlatform.NAVER,
-                auction = firstSlot.auctionCase
-            )
-        }
         val initialTopics = TopicSelectionEngine.rankCandidates(
             slots = initialSlots,
             config = initialConfig,
@@ -216,8 +202,8 @@ class StudioViewModel(
             nowText = currentTimestamp()
         )
         val initialLogs = _uiState.value.publishLogs
-        val initialNaverStatuses = buildNaverPublishStatuses(initialSlots, initialLogs, initialConfig)
-        val initialGuides = directPublishClient.buildAlternateNaverWriteGuides(initialConfig, firstSlot)
+        val initialNaverStatuses = emptyList<NaverPublishStatusRecord>()
+        val initialGuides = emptyList<NaverWriteMethodGuide>()
         val initialGoogleAccount = GoogleAccountAuthHelper.currentGoogleAccountState(
             primaryGeminiFirst = initialConfig.aiPrimaryGeminiFirst,
             grokFallbackEnabled = initialConfig.grokFallbackEnabled,
@@ -238,26 +224,22 @@ class StudioViewModel(
         _uiState.update {
             it.copy(
                 slots = initialSlots,
-                selectedSlotId = firstSlot?.postId,
-                activeRegistryInfographic = initialInfographic,
-                activeCourtArchive = initialArchive,
+                selectedSlotId = null,
+                activeRegistryInfographic = null,
+                activeCourtArchive = null,
                 warehouseArticles = initialSeed.articles,
                 writingLogs = initialSeed.writingLogs,
                 visitorLogs = initialSeed.visitorLogs,
-                legalVerificationByCaseId = initialLegalMap,
-                attractivenessByCaseId = initialAttractivenessMap,
+                legalVerificationByCaseId = emptyMap(),
+                attractivenessByCaseId = emptyMap(),
                 qualityDefenseState = QualityDefenseModuleState(
                     autoDefenseEnabled = true,
-                    lastAuditedCaseId = firstAuction?.caseId.orEmpty(),
+                    lastAuditedCaseId = "",
                     lastChannel = ChannelPlatform.NAVER,
-                    lastResult = initialDefense,
+                    lastResult = null,
                     lastUpdatedAt = nowInit
                 ),
-                telemetry = it.telemetry.copy(
-                    dailyQuotaUsed = initialSlots.count { slot ->
-                        slot.status == PostStatus.PUBLISHED || slot.status == PostStatus.QUEUED
-                    }
-                ),
+                telemetry = it.telemetry.copy(dailyQuotaUsed = 0),
                 lowQualityRiskReport = initialRiskReport,
                 autoPublishPausedByRisk = initialRiskReport.autoPublishPaused,
                 autoPublishPauseReason = initialRiskReport.pauseReason,
@@ -425,7 +407,7 @@ class StudioViewModel(
                     RegistryInfographicEngine.buildTemplate(it, state.selectedRegistryTemplateType)
                 } ?: state.activeRegistryInfographic,
                 activeCourtArchive = targetSlot?.let {
-                    CourtEvidenceRecorder.recordFullArchive(it.auctionCase, it.courtPhotoUrls, it.visitRecords)
+                    CourtEvidenceRecorder.recordFullArchiveForSlot(it)
                 } ?: state.activeCourtArchive,
                 legalVerificationByCaseId = legalMap,
                 qualityDefenseState = if (defenseRes != null) {
@@ -459,11 +441,7 @@ class StudioViewModel(
                 this[safeIdx] = cleanUri
             }
             val updatedSlot = targetSlot.copy(courtPhotoUrls = nextUrls)
-            val updatedArchive = CourtEvidenceRecorder.recordFullArchive(
-                auction = updatedSlot.auctionCase,
-                courtPhotoUrls = updatedSlot.courtPhotoUrls,
-                customVisitRecords = updatedSlot.visitRecords
-            )
+            val updatedArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(updatedSlot)
             state.copy(
                 slots = state.slots.map { if (it.postId == postId) updatedSlot else it },
                 warehouseArticles = state.warehouseArticles.map { art ->
@@ -504,11 +482,7 @@ class StudioViewModel(
             )
             val updatedVisits = listOf(newRecord) + targetSlot.visitRecords
             val updatedSlot = targetSlot.copy(visitRecords = updatedVisits)
-            val updatedArchive = CourtEvidenceRecorder.recordFullArchive(
-                auction = updatedSlot.auctionCase,
-                courtPhotoUrls = updatedSlot.courtPhotoUrls,
-                customVisitRecords = updatedSlot.visitRecords
-            )
+            val updatedArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(updatedSlot)
             state.copy(
                 slots = state.slots.map { if (it.postId == postId) updatedSlot else it },
                 warehouseArticles = state.warehouseArticles.map { art ->
@@ -789,10 +763,36 @@ class StudioViewModel(
                             }
                         } else current.slots
                         val updatedTrigger = triggerOutcome.data ?: current.telemetry.triggerStatus
+                        val newLegal = current.legalVerificationByCaseId.toMutableMap()
+                        val newAttr = current.attractivenessByCaseId.toMutableMap()
+                        fetched.forEach { slot ->
+                            val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
+                            newLegal[slot.auctionCase.caseId] = legal
+                            newAttr[slot.auctionCase.caseId] = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
+                        }
+                        val firstSlot = nextSlots.firstOrNull()
+                        val nextTopicBoard = TopicSelectionEngine.rankCandidates(
+                            slots = nextSlots,
+                            config = current.config,
+                            proFunnel = current.proFunnel,
+                            sortMode = current.topicSelectionBoard.sortMode,
+                            naverKeywordDiagnosis = (current.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                            nowText = now
+                        )
                         current.copy(
                             isBusy = false,
                             slots = nextSlots,
-                            selectedSlotId = nextSlots.firstOrNull()?.postId,
+                            selectedSlotId = firstSlot?.postId,
+                            activeCourtArchive = firstSlot?.let {
+                                CourtEvidenceRecorder.recordFullArchiveForSlot(it)
+                            } ?: current.activeCourtArchive,
+                            activeRegistryInfographic = firstSlot?.let {
+                                RegistryInfographicEngine.buildTemplate(it.auctionCase, current.selectedRegistryTemplateType)
+                            } ?: current.activeRegistryInfographic,
+                            legalVerificationByCaseId = newLegal,
+                            attractivenessByCaseId = newAttr,
+                            topicSelectionBoard = nextTopicBoard,
+                            naverPublishStatuses = buildNaverPublishStatuses(nextSlots, current.publishLogs, current.config),
                             telemetry = current.telemetry.copy(
                                 ddakchalConnected = true,
                                 lastSyncTime = now,
@@ -939,7 +939,15 @@ class StudioViewModel(
         assumedRights: String,
         publishDate: String
     ) {
-        val cleanCaseId = caseId.trim().ifBlank { "2026타경1001" }
+        val cleanCaseId = repository.normalizeCaseNumber(caseId).ifBlank { caseId.trim() }
+        val cleanCourt = courtName.trim()
+        val cleanAddress = address.trim()
+        if (cleanCaseId.isBlank() || cleanCourt.isBlank() || cleanAddress.isBlank()) {
+            _uiState.update {
+                it.copy(errorMessage = "실제 사건번호, 관할 법원명, 소재지를 모두 입력해 주세요.")
+            }
+            return
+        }
         val appraisalKrw = (appraisalManWon.coerceAtLeast(100L)) * 10_000L
         val minBidKrw = (minBidManWon.coerceAtLeast(50L)) * 10_000L
         val discountPct = ((minBidKrw.toDouble() / appraisalKrw.toDouble()) * 100).toInt().coerceIn(10, 100)
@@ -949,25 +957,25 @@ class StudioViewModel(
         val auction = AuctionCaseIntel(
             caseId = cleanCaseId,
             dedupKey = "ca-custom-${cleanCaseId.hashCode().toUInt()}",
-            courtName = courtName.trim().ifBlank { "서울중앙지방법원" },
-            address = address.trim().ifBlank { "서울특별시 강남구 역삼동 물건" },
+            courtName = cleanCourt,
+            address = cleanAddress,
             propertyType = propertyType,
             appraisalPriceKrw = appraisalKrw,
             minBidPriceKrw = minBidKrw,
             bidCount = 1,
             discountRatePct = discountPct,
-            auctionDate = publishDate.trim().ifBlank { "2026-12-12" },
-            baseRightDate = baseRightDate.trim().ifBlank { "2021-05-10" },
-            dividendDeadline = "2026-11-28",
+            auctionDate = publishDate.trim().ifBlank { PostAuctionFollowUpEngine.currentIsoDate() },
+            baseRightDate = baseRightDate.trim(),
+            dividendDeadline = "",
             claimAmountKrw = (appraisalKrw * 0.55).toLong(),
             depositRatePct = 10,
-            possessionSummary = "크롤러·현황조사서 연동 분석 완료",
-            tenantSummary = "매각물건명세서 임차인 대항력·배당요구 검수 완료",
-            assumedRightsText = assumedRights.trim().ifBlank { "말소기준권리 이후 권리 소멸, 현장 체납관리비 재확인" },
+            possessionSummary = "사용자 입력 사건 · 현장/서류 확인 대상",
+            tenantSummary = "매각물건명세서 확인 필요",
+            assumedRightsText = assumedRights.trim().ifBlank { "미입력" },
             specialCheckNotice = propertyType.focusSummary,
             recentRealTradeMedianKrw = (appraisalKrw * 0.92).toLong(),
-            stats3yRatePct = 74.6,
-            clicksLast7d = 540,
+            stats3yRatePct = 0.0,
+            clicksLast7d = 0,
             conservativeBidKrw = (minBidKrw * 1.04).toLong(),
             balancedBidKrw = (minBidKrw * 1.11).toLong(),
             aggressiveBidKrw = (minBidKrw * 1.18).toLong()
@@ -1058,100 +1066,45 @@ class StudioViewModel(
 
     fun instantCreateAndStoreInWarehouse(propertyType: PropertyType? = null) {
         val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull {
+            (propertyType == null && it.postId == state.selectedSlotId) ||
+                (propertyType != null && it.auctionCase.propertyType == propertyType)
+        } ?: state.slots.firstOrNull()
+
+        if (targetSlot == null) {
+            val discoveredCase = state.todakAdmin.discoveredItems.firstOrNull {
+                propertyType == null || it.propertyType == propertyType
+            } ?: state.todakAdmin.discoveredItems.firstOrNull()
+            if (discoveredCase != null) {
+                generatePostFromDiscoveredDbItem(discoveredCase.caseId)
+                return
+            }
+            _uiState.update {
+                it.copy(errorMessage = "창고에 보관할 실제 서버 사건이 없습니다. 상단 사건번호 조회 또는 딱찰 DB 탐색을 먼저 실행해 주세요.")
+            }
+            return
+        }
+
         val cfg = state.config
         val funnelCfg = state.proFunnel
-        val nextIndex = state.warehouseArticles.size + 1
-        val chosenType = propertyType ?: PropertyType.entries[(nextIndex - 1) % PropertyType.entries.size]
-        val caseNo = "2026타경${2100 + nextIndex * 17}"
-        val dedupKey = "ca-wh-${caseNo}-${System.currentTimeMillis() % 10000}"
-
-        val (court, address, appMan, minMan) = when (chosenType) {
-            PropertyType.APT_OFFICETEL -> listOf("수원지방법원", "경기도 용인시 수지구 성복동 롯데캐슬골드 102동 804호", "68000", "43520")
-            PropertyType.VILLA_MULTIFAMILY -> listOf("서울북부지방법원", "서울특별시 도봉구 창동 신축 다세대 4층 401호", "26000", "16640")
-            PropertyType.COMMERCIAL_RETAIL -> listOf("서울동부지방법원", "서울특별시 송파구 문정동 법조타운 근린상가 1층 112호", "89000", "56960")
-            PropertyType.LAND_FARMLAND -> listOf("춘천지방법원", "강원특별자치도 원주시 지정면 계획관리 전 일괄", "42000", "26880")
-            PropertyType.FACTORY_SPECIAL -> listOf("수원지방법원 안산지원", "경기도 시흥시 정왕동 시화공단 일반공장 1동", "195000", "124800")
-        }
-        val appraisalKrw = appMan.toLong() * 10_000L
-        val minBidKrw = minMan.toLong() * 10_000L
-
-        val auction = AuctionCaseIntel(
-            caseId = caseNo,
-            dedupKey = dedupKey,
-            courtName = court,
-            address = address,
-            propertyType = chosenType,
-            appraisalPriceKrw = appraisalKrw,
-            minBidPriceKrw = minBidKrw,
-            bidCount = 1,
-            discountRatePct = 64,
-            auctionDate = "2026-12-15",
-            baseRightDate = "2021-07-08",
-            dividendDeadline = "2025-12-05",
-            claimAmountKrw = (appraisalKrw * 0.52).toLong(),
-            depositRatePct = 10,
-            possessionSummary = "채무자 겸 소유자 점유 또는 현황 확인 완료",
-            tenantSummary = "전입세대열람 및 매각물건명세서 대조 완료(대항력 없음)",
-            assumedRightsText = "말소기준권리 2021-07-08 근저당 이후 후순위 권리 일괄 소멸",
-            specialCheckNotice = chosenType.focusSummary,
-            recentRealTradeMedianKrw = (appraisalKrw * 0.91).toLong(),
-            stats3yRatePct = 75.8,
-            clicksLast7d = 580 + nextIndex * 11,
-            conservativeBidKrw = (minBidKrw * 1.05).toLong(),
-            balancedBidKrw = (minBidKrw * 1.12).toLong(),
-            aggressiveBidKrw = (minBidKrw * 1.19).toLong()
-        )
-
-        val baseVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(
-            auction = auction,
-            seedIndex = nextIndex,
-            config = cfg,
-            proFunnel = funnelCfg
-        )
-        val activeTemplatesForType = state.postTemplates.filter {
-            it.propertyType == chosenType && it.isActiveForGeneration
-        }
-        val variants = baseVariants.mapValues { (platform, variant) ->
-            val matchedTemplate = activeTemplatesForType.firstOrNull { it.targetChannel == platform }
-            if (matchedTemplate != null) {
-                BlogPostTemplateEngine.applyTemplateToVariant(variant, matchedTemplate, auction, cfg, funnelCfg)
-            } else {
-                variant
-            }
-        }
-        val scheduled = repository.computeStaggeredSchedule("2026-11-22", nextIndex, cfg)
-
+        val auction = targetSlot.auctionCase
         viewModelScope.launch {
             val corpus = repository.getRecent7DayCorpus()
-            val draftSlot = GeneratedPostSlot(
-                postId = "post-$dedupKey",
-                queueId = "q-wh-$nextIndex",
-                slotIndex = nextIndex,
-                publishDate = "2026-11-22",
-                auctionCase = auction,
-                variants = variants,
-                scheduledTimes = scheduled,
-                status = PostStatus.DRAFT,
-                qaReport = QaVerificationEngine.auditSlot(auction, variants, scheduled, cfg, corpus),
-                sourceLabel = "원클릭 창고 즉시생성"
+            val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                slot = targetSlot,
+                config = cfg,
+                proFunnel = funnelCfg,
+                recent7DayCorpus = corpus,
+                maxIterations = 3
             )
-            val (newSlot, defenseReport) = if (state.qualityDefenseState.autoDefenseEnabled) {
-                QualityDefenseEngine.defendSlot(draftSlot, cfg, funnelCfg, corpus)
-            } else {
-                draftSlot to QualityDefenseEngine.defendText(
-                    rawTitle = draftSlot.variants[ChannelPlatform.NAVER]?.title.orEmpty(),
-                    rawBody = draftSlot.variants[ChannelPlatform.NAVER]?.bodyText.orEmpty(),
-                    channel = ChannelPlatform.NAVER,
-                    auction = auction
-                )
-            }
+            val newSlot = fixed.slot
             val legalReport = LegalDoctrineVerifier.verify(newSlot.auctionCase)
             val regTemplate = RegistryInfographicEngine.buildTemplate(newSlot.auctionCase, state.selectedRegistryTemplateType)
-            val courtArchive = CourtEvidenceRecorder.recordFullArchive(newSlot.auctionCase)
+            val courtArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(newSlot)
             val evalResult = Article30PointEvaluator.evaluate(newSlot, cfg, funnelCfg, regTemplate, corpus)
             val now = currentTimestamp()
             val whArticle = WarehouseArticle(
-                warehouseId = "wh-$dedupKey",
+                warehouseId = "wh-${newSlot.auctionCase.dedupKey}",
                 slot = newSlot,
                 evaluation = evalResult,
                 registryInfographic = regTemplate,
@@ -1162,7 +1115,7 @@ class StudioViewModel(
                 logId = "wlog-${System.currentTimeMillis()}",
                 warehouseId = whArticle.warehouseId,
                 caseId = newSlot.auctionCase.caseId,
-                actionTitle = "원클릭 바로생성 → 창고 보관 (${evalResult.totalScore}점)",
+                actionTitle = "실사건 검수 → 창고 보관 (${evalResult.totalScore}점)",
                 score = evalResult.totalScore,
                 passedGate95 = evalResult.eligibleForRegistration,
                 detail = "${evalResult.passedCount}/30 항목 통과 · ${legalReport.auditSummary}",
@@ -1171,24 +1124,16 @@ class StudioViewModel(
             val snapshot = repository.upsertWarehouseArticle(whArticle, log)
             _uiState.update { current ->
                 current.copy(
-                    slots = listOf(newSlot) + current.slots,
+                    slots = current.slots.map { if (it.postId == newSlot.postId) newSlot else it },
                     selectedSlotId = newSlot.postId,
                     activeRegistryInfographic = regTemplate,
                     activeCourtArchive = courtArchive,
                     legalVerificationByCaseId = current.legalVerificationByCaseId + (newSlot.auctionCase.caseId to legalReport),
-                    qualityDefenseState = current.qualityDefenseState.copy(
-                        lastAuditedCaseId = newSlot.auctionCase.caseId,
-                        lastChannel = ChannelPlatform.NAVER,
-                        lastResult = defenseReport,
-                        totalAutoFixedCount = current.qualityDefenseState.totalAutoFixedCount + defenseReport.totalHitsCount,
-                        lastUpdatedAt = currentTimestamp()
-                    ),
-                    warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + current.warehouseArticles),
+                    warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + current.warehouseArticles.filterNot { it.warehouseId == whArticle.warehouseId }),
                     writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
-                    statusMessage = "${newSlot.auctionCase.caseId} 원클릭 생성·품질방어·법리검증 완료 (30개 항목 ${evalResult.totalScore}/100점)"
+                    statusMessage = "${newSlot.auctionCase.caseId} 실사건 검수·창고 보관 완료 (30개 항목 ${evalResult.totalScore}/100점)"
                 )
             }
-            evaluateSlotWithAi30Criteria(newSlot.postId)
         }
     }
 
@@ -1262,141 +1207,79 @@ class StudioViewModel(
     fun createAndEvaluateBusanProfitableLandTest() {
         val state = _uiState.value
         val cfg = state.config
-        val funnelCfg = state.proFunnel
-        val busanCandidates = CourtEvidenceRecorder.findProfitableBusanLandUnder50M()
-        val chosenIndex = if (state.slots.any { it.auctionCase.caseId == busanCandidates.first().caseId }) 1 else 0
-        val auction = busanCandidates[chosenIndex.coerceIn(0, busanCandidates.lastIndex)]
-        val nextIndex = state.slots.size + 1
+        val realBusanSlot = state.slots.firstOrNull {
+            it.auctionCase.address.contains("부산") &&
+                (it.auctionCase.propertyType == PropertyType.LAND_FARMLAND || it.auctionCase.minBidPriceKrw in 1L..50_000_000L)
+        } ?: state.slots.firstOrNull { it.auctionCase.address.contains("부산") }
 
-        val variants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(
-            auction = auction,
-            seedIndex = nextIndex + 3,
-            config = cfg,
-            proFunnel = funnelCfg
-        )
-        val scheduled = repository.computeStaggeredSchedule("2026-11-22", nextIndex, cfg)
+        if (realBusanSlot != null) {
+            selectSlot(realBusanSlot.postId)
+            evaluateSlotWithAi30Criteria(realBusanSlot.postId)
+            return
+        }
+
+        val discoveredBusan = state.todakAdmin.discoveredItems.firstOrNull {
+            it.address.contains("부산") || it.courtName.contains("부산")
+        }
+        if (discoveredBusan != null) {
+            generatePostFromDiscoveredDbItem(discoveredBusan.caseId)
+            return
+        }
+
+        if (cfg.ddakchalApiBase.isBlank()) {
+            _uiState.update {
+                it.copy(errorMessage = "딱찰 실서버에서 조회된 부산 물건이 없습니다. 상단 사건번호 조회 또는 DB 탐색으로 실제 물건을 먼저 불러오세요.")
+            }
+            return
+        }
 
         viewModelScope.launch {
-            val corpus = repository.getRecent7DayCorpus()
-            val qa = QaVerificationEngine.auditSlot(auction, variants, scheduled, cfg, corpus)
-            val newSlot = GeneratedPostSlot(
-                postId = "post-${auction.dedupKey}",
-                queueId = "q-busan-${auction.caseId}",
-                slotIndex = nextIndex,
-                publishDate = "2026-11-22",
-                auctionCase = auction,
-                variants = variants,
-                scheduledTimes = scheduled,
-                status = if (qa.overallPassed) PostStatus.QUEUED else PostStatus.DRAFT,
-                qaReport = qa,
-                sourceLabel = "부산 5천만원 미만 수익성 토지 발굴"
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            val result = repository.runTodakCrawlEngineWithSteps(
+                config = cfg,
+                regions = listOf("부산"),
+                categoryFilter = "LAND_FARMLAND",
+                limit = 10
             )
-            val regTemplate = RegistryInfographicEngine.buildTemplate(auction, state.selectedRegistryTemplateType)
-            val courtArchive = CourtEvidenceRecorder.recordFullArchive(auction)
-            val evalResult = Article30PointEvaluator.evaluate(newSlot, cfg, funnelCfg, regTemplate, corpus)
-            val now = currentTimestamp()
-            val whArticle = WarehouseArticle(
-                warehouseId = "wh-${auction.dedupKey}",
-                slot = newSlot,
-                evaluation = evalResult,
-                registryInfographic = regTemplate,
-                warehouseStatus = if (evalResult.eligibleForRegistration) WarehouseArticleStatus.STORED_READY else WarehouseArticleStatus.NEEDS_IMPROVEMENT,
-                createdAt = now
-            )
-            val log = WritingActivityLog(
-                logId = "wlog-busan-${System.currentTimeMillis()}",
-                warehouseId = whArticle.warehouseId,
-                caseId = auction.caseId,
-                actionTitle = "부산 5천만 미만 수익성 토지 발굴·생성 (${QaVerificationEngine.formatKrwShort(auction.minBidPriceKrw)})",
-                score = evalResult.totalScore,
-                passedGate95 = evalResult.eligibleForRegistration,
-                detail = "법원사진 ${courtArchive.photos.size}컷 · 문건 ${courtArchive.documents.size}종 · 기본 ${evalResult.totalScore}점",
-                timestamp = now
-            )
-            val snapshot = repository.upsertWarehouseArticle(whArticle, log)
-            _uiState.update { current ->
-                val dedupedSlots = listOf(newSlot) + current.slots.filterNot { it.postId == newSlot.postId }
-                current.copy(
-                    slots = dedupedSlots,
-                    selectedSlotId = newSlot.postId,
-                    activeRegistryInfographic = regTemplate,
-                    activeCourtArchive = courtArchive,
-                    warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + current.warehouseArticles),
-                    writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs),
-                    statusMessage = "${auction.caseId} 부산 5천만원 미만 토지 글 생성·법원기록 저장 완료 → AI 채점 실행 중"
-                )
+            val matchedSlot = result.items.firstOrNull()?.slot
+            if (matchedSlot == null) {
+                _uiState.update {
+                    it.copy(
+                        isBusy = false,
+                        errorMessage = result.summaryMessage.ifBlank {
+                            "실서버 피드에서 부산 토지 사건을 찾지 못했습니다."
+                        }
+                    )
+                }
+            } else {
+                val regTemplate = RegistryInfographicEngine.buildTemplate(matchedSlot.auctionCase, state.selectedRegistryTemplateType)
+                val courtArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(matchedSlot)
+                _uiState.update { cur ->
+                    val deduped = listOf(matchedSlot) + cur.slots.filterNot { it.postId == matchedSlot.postId }
+                    cur.copy(
+                        isBusy = false,
+                        slots = deduped,
+                        selectedSlotId = matchedSlot.postId,
+                        activeRegistryInfographic = regTemplate,
+                        activeCourtArchive = courtArchive,
+                        statusMessage = "${matchedSlot.auctionCase.caseId} 실서버 부산 물건 로드 완료 → AI 채점 실행"
+                    )
+                }
+                evaluateSlotWithAi30Criteria(matchedSlot.postId)
             }
-            evaluateSlotWithAi30Criteria(newSlot.postId)
         }
     }
 
     fun createLowScoreDraftForAutoFixTest() {
         val state = _uiState.value
-        val cfg = state.config
-        val funnelCfg = state.proFunnel
-        val auction = CourtEvidenceRecorder.findProfitableBusanLandUnder50M().first()
-        val draftCaseId = "${auction.caseId}-미완성초안"
-        val badAuction = auction.copy(
-            caseId = draftCaseId,
-            dedupKey = "ca-low-draft-${System.currentTimeMillis() % 10000}"
-        )
-        val baseVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(badAuction, 9, cfg, proFunnel = funnelCfg)
-        val badNaver = baseVariants[ChannelPlatform.NAVER]!!.copy(
-            title = "[급매추천] ${badAuction.caseId}",
-            bodyText = "■ Q1. 부산 토지 경매 알아보겠습니다 🔥 https://spam-test.example.com",
-            pinnedCommentSnippet = ""
-        )
-        val badVariants = baseVariants + (ChannelPlatform.NAVER to badNaver)
-        val scheduled = repository.computeStaggeredSchedule("2026-11-22", 9, cfg)
-
-        viewModelScope.launch {
-            val qa = QaVerificationEngine.auditSlot(badAuction, badVariants, scheduled, cfg)
-            val draftSlot = GeneratedPostSlot(
-                postId = "post-${badAuction.dedupKey}",
-                queueId = "q-low-${System.currentTimeMillis() % 1000}",
-                slotIndex = state.slots.size + 1,
-                publishDate = "2026-11-22",
-                auctionCase = badAuction,
-                variants = badVariants,
-                scheduledTimes = scheduled,
-                status = PostStatus.DRAFT,
-                qaReport = qa,
-                sourceLabel = "95점 미만 수정제안 테스트 초안"
-            )
-            val regTemplate = RegistryInfographicEngine.buildTemplate(badAuction, state.selectedRegistryTemplateType)
-            val courtArchive = CourtEvidenceRecorder.recordFullArchive(badAuction)
-            val evalResult = Article30PointEvaluator.evaluate(draftSlot, cfg, funnelCfg, regTemplate)
-            val whArticle = WarehouseArticle(
-                warehouseId = "wh-${badAuction.dedupKey}",
-                slot = draftSlot,
-                evaluation = evalResult,
-                registryInfographic = regTemplate,
-                warehouseStatus = WarehouseArticleStatus.NEEDS_IMPROVEMENT,
-                createdAt = currentTimestamp()
-            )
-            val log = WritingActivityLog(
-                logId = "wlog-low-${System.currentTimeMillis()}",
-                warehouseId = whArticle.warehouseId,
-                caseId = badAuction.caseId,
-                actionTitle = "95점 미만 초안 테스트 (${evalResult.totalScore}점 → 자동 수정제안 대기)",
-                score = evalResult.totalScore,
-                passedGate95 = false,
-                detail = "${evalResult.passedCount}/30 통과 · AI 자동 수정 제안 생성",
-                timestamp = currentTimestamp()
-            )
-            val snapshot = repository.upsertWarehouseArticle(whArticle, log)
-            _uiState.update { current ->
-                current.copy(
-                    slots = listOf(draftSlot) + current.slots,
-                    selectedSlotId = draftSlot.postId,
-                    activeRegistryInfographic = regTemplate,
-                    activeCourtArchive = courtArchive,
-                    warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + current.warehouseArticles),
-                    writingLogs = snapshot?.writingLogs ?: (listOf(log) + current.writingLogs)
-                )
+        val baseSlot = state.slots.firstOrNull { it.postId == state.selectedSlotId } ?: state.slots.firstOrNull()
+        if (baseSlot == null) {
+            _uiState.update {
+                it.copy(errorMessage = "검증할 실제 사건이 없습니다. 상단에서 사건번호를 조회하거나 서버 DB를 탐색해 주세요.")
             }
-            evaluateSlotWithAi30Criteria(draftSlot.postId)
+            return
         }
+        evaluateSlotWithAi30Criteria(baseSlot.postId)
     }
 
     fun applyAiAutoFixesToArticle(caseIdOrPostId: String) {
@@ -1422,7 +1305,7 @@ class StudioViewModel(
                 proFunnel = state.proFunnel
             )
             val reg = RegistryInfographicEngine.buildTemplate(fixedAuction, state.selectedRegistryTemplateType)
-            val archive = CourtEvidenceRecorder.recordFullArchive(fixedAuction)
+            val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(fixedSlot)
             val eval = Article30PointEvaluator.evaluate(fixedSlot, state.config, state.proFunnel, reg)
 
             val existingWh = _uiState.value.warehouseArticles.firstOrNull { it.slot.postId == targetSlot.postId }
@@ -2433,8 +2316,19 @@ class StudioViewModel(
             try {
                 repository.saveConfig(updatedConfig)
                 val syncedRes = repository.syncSyndicationPack(updatedConfig)
-                val serverSlots = syncedRes.getOrDefault(emptyList())
-                val ddakchalLinked = syncedRes.isSuccess && serverSlots.isNotEmpty()
+                val discoveredRes: List<GeneratedPostSlot> = if (syncedRes.getOrDefault(emptyList()).isEmpty() && updatedConfig.ddakchalApiBase.isNotBlank()) {
+                    repository.inspectServerDatabases(
+                        config = updatedConfig,
+                        categoryFilter = state.todakAdmin.selectedCategoryFilter,
+                        searchQuery = state.todakAdmin.searchQuery,
+                        limit = safePerDay * 7
+                    ).items.map { it.slot }
+                } else {
+                    emptyList()
+                }
+                val serverSlots = (syncedRes.getOrDefault(emptyList()) + discoveredRes + state.slots)
+                    .distinctBy { it.auctionCase.caseId }
+                val ddakchalLinked = syncedRes.isSuccess && syncedRes.getOrDefault(emptyList()).isNotEmpty()
                 val existingIds = state.warehouseArticles.map { it.slot.auctionCase.caseId }.toSet()
                 val corpus = repository.getRecent7DayCorpus()
 
@@ -2447,6 +2341,15 @@ class StudioViewModel(
                     proFunnel = state.proFunnel,
                     recent7DayCorpus = corpus
                 )
+                if (weeklySlots.isEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            errorMessage = "주간 예약을 생성할 실제 서버 사건이 없습니다. 상단 사건번호 조회 또는 딱찰 DB 탐색·크롤링을 먼저 실행하세요."
+                        )
+                    }
+                    return@launch
+                }
 
                 val now = currentTimestamp()
                 val newWarehouseArticles = weeklySlots.map { slot ->
@@ -2570,7 +2473,7 @@ class StudioViewModel(
         }
     }
 
-    fun createHighScoreAndAutoRegister(propertyType: PropertyType? = null) {
+    fun createHighScoreAndAutoRegister(@Suppress("UNUSED_PARAMETER") propertyType: PropertyType? = null) {
         val state = _uiState.value
         if (state.autoPublishPausedByRisk) {
             _uiState.update {
@@ -2581,97 +2484,18 @@ class StudioViewModel(
             }
             return
         }
-        val cfg = state.config
-        val funnelCfg = state.proFunnel
-        val nextIndex = state.warehouseArticles.size + state.slots.size + 1
-        val chosenType = propertyType ?: PropertyType.entries[(nextIndex - 1) % PropertyType.entries.size]
-        val caseNo = "2026타경${7100 + nextIndex * 19}"
-        val dedupKey = "ca-auto-$caseNo-${System.currentTimeMillis() % 10000}"
-
-        val (court, address, appMan, minMan) = when (chosenType) {
-            PropertyType.APT_OFFICETEL -> listOf("수원지방법원", "경기도 용인시 수지구 성복동 롯데캐슬골드 102동 804호", "68000", "43520")
-            PropertyType.VILLA_MULTIFAMILY -> listOf("서울북부지방법원", "서울특별시 도봉구 창동 다세대주택 4층 401호", "26000", "16640")
-            PropertyType.COMMERCIAL_RETAIL -> listOf("서울동부지방법원", "서울특별시 송파구 문정동 법조타운 근린상가 1층 112호", "89000", "56960")
-            PropertyType.LAND_FARMLAND -> listOf("춘천지방법원", "강원특별자치도 원주시 지정면 계획관리 대지 420㎡", "42000", "26880")
-            PropertyType.FACTORY_SPECIAL -> listOf("수원지방법원 안산지원", "경기도 시흥시 정왕동 시화공단 일반공장 1동", "195000", "124800")
+        val selected = state.slots.firstOrNull { it.postId == state.selectedSlotId } ?: state.slots.firstOrNull()
+        if (selected != null) {
+            autoFixAndRegisterSlot(selected.postId)
+            return
         }
-        val appraisalKrw = appMan.toLong() * 10_000L
-        val minBidKrw = minMan.toLong() * 10_000L
-        val todayIso = PostAuctionFollowUpEngine.currentIsoDate()
-
-        val auction = AuctionCaseIntel(
-            caseId = caseNo,
-            dedupKey = dedupKey,
-            courtName = court,
-            address = address,
-            propertyType = chosenType,
-            appraisalPriceKrw = appraisalKrw,
-            minBidPriceKrw = minBidKrw,
-            bidCount = 1,
-            discountRatePct = 64,
-            auctionDate = "2026-12-20",
-            baseRightDate = "2021-07-08",
-            dividendDeadline = "2026-12-05",
-            claimAmountKrw = (appraisalKrw * 0.52).toLong(),
-            depositRatePct = 10,
-            possessionSummary = "채무자 겸 소유자 점유 확인 완료",
-            tenantSummary = "전입세대열람 및 매각물건명세서 대조 완료(선순위 대항력 임차인 없음)",
-            assumedRightsText = "말소기준권리 2021-07-08 근저당 이후 후순위 권리 일괄 소멸",
-            specialCheckNotice = chosenType.focusSummary,
-            recentRealTradeMedianKrw = (appraisalKrw * 0.91).toLong(),
-            stats3yRatePct = 75.8,
-            clicksLast7d = 590 + nextIndex * 11,
-            conservativeBidKrw = (minBidKrw * 1.05).toLong(),
-            balancedBidKrw = (minBidKrw * 1.12).toLong(),
-            aggressiveBidKrw = (minBidKrw * 1.19).toLong()
-        )
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
-            try {
-                val corpus = repository.getRecent7DayCorpus()
-                val baseVariants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, nextIndex, cfg, proFunnel = funnelCfg)
-                val activeTemplatesForType = state.postTemplates.filter {
-                    it.propertyType == chosenType && it.isActiveForGeneration && !it.isPreset
-                }
-                val variants = if (activeTemplatesForType.isNotEmpty()) {
-                    baseVariants.mapValues { (platform, variant) ->
-                        val matchedTemplate = activeTemplatesForType.firstOrNull { it.targetChannel == platform }
-                        if (matchedTemplate != null) {
-                            BlogPostTemplateEngine.applyTemplateToVariant(variant, matchedTemplate, auction, cfg, funnelCfg)
-                        } else {
-                            variant
-                        }
-                    }
-                } else {
-                    baseVariants
-                }
-                val scheduled = repository.computeStaggeredSchedule(todayIso, nextIndex, cfg)
-                val draft = GeneratedPostSlot(
-                    postId = "post-$dedupKey",
-                    queueId = "q-auto-$nextIndex",
-                    slotIndex = nextIndex,
-                    publishDate = todayIso,
-                    auctionCase = auction,
-                    variants = variants,
-                    scheduledTimes = scheduled,
-                    status = PostStatus.DRAFT,
-                    qaReport = QaVerificationEngine.auditSlot(auction, variants, scheduled, cfg, corpus),
-                    sourceLabel = "초심플 95+ 자동 교정·등록"
-                )
-                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
-                    slot = draft,
-                    config = cfg,
-                    proFunnel = funnelCfg,
-                    recent7DayCorpus = corpus,
-                    maxIterations = 3
-                )
-                executeAutoRegisterSlotInternal(fixed.slot, fixed.finalScore, fixed.passedGate95, isNewCreation = true)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _uiState.update { it.copy(isBusy = false, errorMessage = "자동 생성·등록 오류: ${e.localizedMessage}") }
-            }
+        val firstDiscovered = state.todakAdmin.discoveredItems.firstOrNull()
+        if (firstDiscovered != null) {
+            lookupCaseNumberFromTodakAndAutoPreview(firstDiscovered.caseId, preferredTabIndex = 0)
+            return
+        }
+        _uiState.update {
+            it.copy(errorMessage = "발행할 실제 사건이 없습니다. 상단에서 법원 사건번호를 입력해 불러오거나 딱찰 DB 탐색·크롤링을 먼저 실행하세요.")
         }
     }
 
@@ -2718,7 +2542,7 @@ class StudioViewModel(
         val state = _uiState.value
         val cfg = state.config
         val regTemplate = RegistryInfographicEngine.buildTemplate(slot.auctionCase, state.selectedRegistryTemplateType)
-        val courtArchive = CourtEvidenceRecorder.recordFullArchive(slot.auctionCase, slot.courtPhotoUrls, slot.visitRecords)
+        val courtArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
         val eval = Article30PointEvaluator.evaluate(slot, cfg, state.proFunnel, regTemplate)
         val legal = LegalDoctrineVerifier.verify(slot.auctionCase)
         val attractiveness = InvestmentAttractivenessEngine.score(slot.auctionCase, legal)
@@ -2736,7 +2560,7 @@ class StudioViewModel(
             }
         }
         val finalStatus = when {
-            passed95 && (anyHttpOk || d1Result.isSuccess) -> PostStatus.PUBLISHED
+            passed95 && anyHttpOk -> PostStatus.PUBLISHED
             passed95 -> PostStatus.QUEUED
             else -> PostStatus.DRAFT
         }
@@ -3256,7 +3080,16 @@ class StudioViewModel(
 
     fun searchCaseWithAiAndOptimize(queryInput: String) {
         val query = queryInput.trim().ifBlank {
-            _uiState.value.slots.firstOrNull()?.auctionCase?.caseId ?: "2024타경4501"
+            _uiState.value.slots.firstOrNull()?.auctionCase?.caseId.orEmpty()
+        }
+        if (query.isBlank()) {
+            _uiState.update {
+                it.copy(
+                    aiCaseSearchState = AiCaseSearchUiState.Error("", "검색할 실제 사건번호 또는 물건 키워드를 입력해 주세요."),
+                    errorMessage = "검색할 실제 사건번호 또는 물건 키워드를 입력해 주세요."
+                )
+            }
+            return
         }
         viewModelScope.launch {
             _uiState.update {
@@ -3268,7 +3101,6 @@ class StudioViewModel(
             }
             try {
                 val state = _uiState.value
-                // 1) Local queue / warehouse lookup first
                 var matchedSlot = state.slots.firstOrNull { slot ->
                     slot.auctionCase.caseId.contains(query, ignoreCase = true) ||
                         slot.auctionCase.address.contains(query, ignoreCase = true) ||
@@ -3279,18 +3111,28 @@ class StudioViewModel(
                         wh.slot.auctionCase.address.contains(query, ignoreCase = true)
                 }?.slot
 
-                // 2) Live DDAKCHAL lookup by caseId / dedupKey if configured
                 if (matchedSlot == null && state.config.ddakchalApiBase.isNotBlank()) {
-                    val assetOutcome = repository.fetchSingleAssetWithTelemetry(state.config, query, refresh = true)
-                    if (assetOutcome.isSuccess && assetOutcome.data != null) {
-                        matchedSlot = assetOutcome.data
+                    val normalizedCase = repository.normalizeCaseNumber(query)
+                    if (normalizedCase.isNotBlank()) {
+                        val lookup = repository.lookupCourtCaseFromTodakServer(state.config, normalizedCase)
+                        matchedSlot = lookup.slot
+                    } else {
+                        val assetOutcome = repository.fetchSingleAssetWithTelemetry(state.config, query, refresh = true)
+                        if (assetOutcome.isSuccess && assetOutcome.data != null) {
+                            matchedSlot = assetOutcome.data
+                        }
                     }
                 }
 
-                // 3) Fallback to top active queued case if user searched a broad topic keyword
                 if (matchedSlot == null) {
-                    matchedSlot = state.slots.firstOrNull()
-                        ?: DefaultSpecDataFactory.buildInitialDaily5Slots(state.config, state.proFunnel).first()
+                    val msg = "실제 큐 및 딱찰 실서버에서 '$query' 사건을 찾지 못했습니다."
+                    _uiState.update {
+                        it.copy(
+                            aiCaseSearchState = AiCaseSearchUiState.Error(query, msg),
+                            errorMessage = msg
+                        )
+                    }
+                    return@launch
                 }
 
                 when (val outcome = aiCaseSearchAdvisor.optimizeCaseForAiSearch(matchedSlot, query, state.config)) {
@@ -3372,8 +3214,15 @@ class StudioViewModel(
             try {
                 val state = _uiState.value
                 val recentCorpus = repository.getRecent7DayCorpus()
-                val sourceSlots = state.slots.ifEmpty {
-                    DefaultSpecDataFactory.buildInitialDaily5Slots(state.config, state.proFunnel)
+                val sourceSlots = state.slots
+                if (sourceSlots.isEmpty()) {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            errorMessage = "HTML을 생성할 실제 사건이 없습니다. 먼저 사건번호 조회 또는 딱찰 서버 동기화를 실행해 주세요."
+                        )
+                    }
+                    return@launch
                 }
                 val ensuredSlots = sourceSlots.take(3).map { slot ->
                     val eval = Article30PointEvaluator.evaluate(
@@ -3582,7 +3431,8 @@ class StudioViewModel(
         val state = _uiState.value
         val sampleCaseId = state.slots.firstOrNull()?.auctionCase?.caseId
             ?: state.slots.firstOrNull()?.auctionCase?.dedupKey
-            ?: "2025타경6297"
+            ?: state.todakAdmin.discoveredItems.firstOrNull()?.caseId
+            ?: ""
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, errorMessage = null, statusMessage = null) }
             try {
@@ -3809,6 +3659,776 @@ class StudioViewModel(
                 updatedAt = latestLog?.publishedAt ?: slot.publishDate
             )
         }
+    }
+
+    // ==================== Todak / Ddakchal Top Owner Admin Console ====================
+
+    fun toggleTodakAdminRegion(region: String) {
+        _uiState.update { state ->
+            val current = state.todakAdmin.selectedRegions
+            val next = if (region in current) {
+                current.filterNot { it == region }
+            } else {
+                current + region
+            }
+            state.copy(todakAdmin = state.todakAdmin.copy(selectedRegions = next))
+        }
+    }
+
+    fun setTodakAdminCategory(category: String) {
+        _uiState.update { state ->
+            state.copy(todakAdmin = state.todakAdmin.copy(selectedCategoryFilter = category.trim()))
+        }
+    }
+
+    fun setTodakAdminSearchQuery(query: String) {
+        _uiState.update { state ->
+            state.copy(todakAdmin = state.todakAdmin.copy(searchQuery = query))
+        }
+    }
+
+    fun setTodakAdminCrawlLimit(limit: Int) {
+        _uiState.update { state ->
+            state.copy(todakAdmin = state.todakAdmin.copy(crawlLimit = limit.coerceIn(1, 20)))
+        }
+    }
+
+    fun applyInlineServerAuthAndSave(
+        apiBase: String,
+        syncToken: String,
+        cfAccountId: String,
+        cfD1DatabaseId: String,
+        cfApiToken: String
+    ) {
+        val cleanBase = apiBase.trim().removeSuffix("/").ifBlank { "https://ddakchal.pages.dev" }
+        val updated = _uiState.value.config.copy(
+            ddakchalApiBase = cleanBase,
+            crawlerSyncToken = syncToken.trim(),
+            cfAccountId = cfAccountId.trim(),
+            cfD1DatabaseId = cfD1DatabaseId.trim(),
+            cfApiToken = cfApiToken.trim()
+        )
+        updateConfig(updated)
+        _uiState.update { state ->
+            state.copy(
+                todakAdmin = state.todakAdmin.copy(
+                    summaryMessage = "서버 인증 키 저장 완료 ($cleanBase · 토큰 ${if (updated.crawlerSyncToken.isNotBlank()) "준비됨" else "미입력"})"
+                )
+            )
+        }
+    }
+
+    fun discoverTodakServerDb() {
+        val state = _uiState.value
+        val cfg = state.config
+        val admin = state.todakAdmin
+        viewModelScope.launch {
+            _uiState.update { cur ->
+                cur.copy(
+                    isBusy = true,
+                    errorMessage = null,
+                    statusMessage = null,
+                    todakAdmin = cur.todakAdmin.copy(
+                        isRunning = true,
+                        currentActionLabel = "1단계: 딱찰 서버 DB & D1 탐색 중…"
+                    )
+                )
+            }
+            try {
+                val result = repository.inspectServerDatabases(
+                    config = cfg,
+                    categoryFilter = admin.selectedCategoryFilter,
+                    searchQuery = admin.searchQuery,
+                    limit = admin.crawlLimit.coerceAtLeast(10)
+                )
+                val now = currentTimestamp()
+                val anyConnected = result.items.isNotEmpty() ||
+                    result.d1TableNames.isNotEmpty() ||
+                    result.triggerStatus != null ||
+                    result.tables.any { it.httpStatusCode in 200..299 }
+                val firstHttpCode = result.stepLogs.firstOrNull { it.httpCode > 0 }?.httpCode ?: 0
+                val totalLatency = result.stepLogs.sumOf { it.latencyMs }
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        telemetry = cur.telemetry.copy(
+                            ddakchalConnected = anyConnected,
+                            cloudflareD1Connected = result.d1TableNames.isNotEmpty() || cur.telemetry.cloudflareD1Connected,
+                            lastSyncTime = if (anyConnected) now else cur.telemetry.lastSyncTime,
+                            apiLatencyMs = if (totalLatency > 0L) totalLatency else cur.telemetry.apiLatencyMs,
+                            lastHttpStatusCode = firstHttpCode,
+                            lastErrorDetail = if (anyConnected) null else result.summaryMessage,
+                            triggerStatus = result.triggerStatus ?: cur.telemetry.triggerStatus
+                        ),
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            discoveredTables = result.tables,
+                            discoveredItems = result.items,
+                            stepLogs = result.stepLogs,
+                            d1TablesRaw = result.d1TableNames,
+                            lastUpdatedAt = now,
+                            summaryMessage = result.summaryMessage
+                        ),
+                        statusMessage = if (anyConnected) result.summaryMessage else null,
+                        errorMessage = if (!anyConnected) result.summaryMessage else null
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = "서버 DB 탐색 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            summaryMessage = err
+                        ),
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    fun runTodakCrawlEngineOnly() {
+        val state = _uiState.value
+        val cfg = state.config
+        val admin = state.todakAdmin
+        viewModelScope.launch {
+            _uiState.update { cur ->
+                cur.copy(
+                    isBusy = true,
+                    errorMessage = null,
+                    statusMessage = null,
+                    todakAdmin = cur.todakAdmin.copy(
+                        isRunning = true,
+                        currentActionLabel = "2단계: 딱찰 크롤링 엔진 실행 중…"
+                    )
+                )
+            }
+            try {
+                val crawlResult = repository.runTodakCrawlEngineWithSteps(
+                    config = cfg,
+                    regions = admin.selectedRegions,
+                    categoryFilter = admin.selectedCategoryFilter,
+                    limit = admin.crawlLimit
+                )
+                val now = currentTimestamp()
+                _uiState.update { cur ->
+                    val mergedItems = (crawlResult.items + cur.todakAdmin.discoveredItems)
+                        .distinctBy { it.dedupKey }
+                    cur.copy(
+                        isBusy = false,
+                        telemetry = cur.telemetry.copy(
+                            ddakchalConnected = crawlResult.isSuccess,
+                            lastSyncTime = if (crawlResult.isSuccess) now else cur.telemetry.lastSyncTime,
+                            apiLatencyMs = if (crawlResult.latencyMs > 0L) crawlResult.latencyMs else cur.telemetry.apiLatencyMs,
+                            lastHttpStatusCode = crawlResult.httpStatusCode,
+                            lastErrorDetail = if (crawlResult.isSuccess) null else crawlResult.summaryMessage,
+                            triggerStatus = crawlResult.triggerStatus ?: cur.telemetry.triggerStatus
+                        ),
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            discoveredItems = mergedItems,
+                            stepLogs = crawlResult.stepLogs,
+                            lastUpdatedAt = now,
+                            summaryMessage = crawlResult.summaryMessage
+                        ),
+                        statusMessage = if (crawlResult.isSuccess) crawlResult.summaryMessage else null,
+                        errorMessage = if (!crawlResult.isSuccess) crawlResult.summaryMessage else null
+                    )
+                }
+                if (crawlResult.isSuccess) {
+                    syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = "크롤링 엔진 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            summaryMessage = err
+                        ),
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    fun runTodakFullAdminPipeline() {
+        val state = _uiState.value
+        val cfg = state.config
+        val admin = state.todakAdmin
+        viewModelScope.launch {
+            _uiState.update { cur ->
+                cur.copy(
+                    isBusy = true,
+                    errorMessage = null,
+                    statusMessage = null,
+                    todakAdmin = cur.todakAdmin.copy(
+                        isRunning = true,
+                        currentActionLabel = "전체 파이프라인: 서버 DB 탐색 → 크롤링 엔진 → 95+ 글 자동생성 중…"
+                    )
+                )
+            }
+            try {
+                // Step 1: Discover Server DB & D1
+                val dbResult = repository.inspectServerDatabases(
+                    config = cfg,
+                    categoryFilter = admin.selectedCategoryFilter,
+                    searchQuery = admin.searchQuery,
+                    limit = admin.crawlLimit.coerceAtLeast(10)
+                )
+                // Step 2: Run Live Crawler & Triggers Engine
+                val crawlResult = repository.runTodakCrawlEngineWithSteps(
+                    config = cfg,
+                    regions = admin.selectedRegions,
+                    categoryFilter = admin.selectedCategoryFilter,
+                    limit = admin.crawlLimit
+                )
+
+                // Step 3: Merge live DB + newly crawled items (deduped)
+                val mergedItems = (crawlResult.items + dbResult.items)
+                    .distinctBy { it.dedupKey }
+
+                val corpus = repository.getRecent7DayCorpus()
+                val now = currentTimestamp()
+                val targetItems = mergedItems.take(admin.crawlLimit.coerceIn(1, 10))
+                val generatedSlots = mutableListOf<GeneratedPostSlot>()
+                val warehouseArticlesToSave = mutableListOf<WarehouseArticle>()
+                val newLegalMap = mutableMapOf<String, LegalDoctrineReport>()
+                val newAttrMap = mutableMapOf<String, InvestmentAttractivenessScore>()
+                var d1SyncedCount = 0
+
+                val latestState = _uiState.value
+                targetItems.forEachIndexed { idx, dbItem ->
+                    val (enrichedSlot, whArticle, legal, attractiveness) = buildEnriched95SlotFromServerSlot(
+                        rawSlot = dbItem.slot,
+                        slotIndex = idx + 1,
+                        config = cfg,
+                        proFunnel = latestState.proFunnel,
+                        postTemplates = latestState.postTemplates,
+                        selectedRegTemplateType = latestState.selectedRegistryTemplateType,
+                        recentCorpus = corpus,
+                        nowText = now
+                    )
+                    generatedSlots += enrichedSlot
+                    warehouseArticlesToSave += whArticle
+                    newLegalMap[enrichedSlot.auctionCase.caseId] = legal
+                    newAttrMap[enrichedSlot.auctionCase.caseId] = attractiveness
+
+                    if (cfg.cfAccountId.isNotBlank() && cfg.cfD1DatabaseId.isNotBlank() && cfg.cfApiToken.isNotBlank()) {
+                        if (repository.pushScheduledSlotToD1(cfg, enrichedSlot).isSuccess) {
+                            d1SyncedCount++
+                        }
+                    }
+                }
+
+                if (warehouseArticlesToSave.isNotEmpty()) {
+                    val summaryLog = WritingActivityLog(
+                        logId = "wlog-todak-pipe-${System.currentTimeMillis()}",
+                        warehouseId = warehouseArticlesToSave.first().warehouseId,
+                        caseId = warehouseArticlesToSave.first().slot.auctionCase.caseId,
+                        actionTitle = "딱찰 관리자 DB→크롤링→95+ 일괄생성 (${generatedSlots.size}건)",
+                        score = warehouseArticlesToSave.maxOf { it.evaluation.totalScore },
+                        passedGate95 = warehouseArticlesToSave.all { it.evaluation.eligibleForRegistration },
+                        detail = "DB ${dbResult.items.size}건 · 크롤링 ${crawlResult.items.size}건 · 95+ 생성 ${generatedSlots.size}건" +
+                            if (d1SyncedCount > 0) " · D1 ${d1SyncedCount}건 반영" else "",
+                        timestamp = now
+                    )
+                    repository.upsertWarehouseArticles(warehouseArticlesToSave, summaryLog)
+                }
+
+                val combinedLogs = mutableListOf<AdminPipelineStepLog>().apply {
+                    addAll(dbResult.stepLogs)
+                    crawlResult.stepLogs.forEach { step ->
+                        add(step.copy(stepIndex = size + 1))
+                    }
+                    add(
+                        AdminPipelineStepLog(
+                            stepIndex = size + 1,
+                            title = "DB 기준 95+ 3채널 원고 생성·창고 저장",
+                            endpoint = "Article30PointEvaluator + Warehouse",
+                            status = when {
+                                generatedSlots.isNotEmpty() -> AdminPipelineStageStatus.SUCCESS
+                                crawlResult.isSuccess || dbResult.items.isNotEmpty() -> AdminPipelineStageStatus.WARN
+                                else -> AdminPipelineStageStatus.ERROR
+                            },
+                            httpCode = if (generatedSlots.isNotEmpty()) 200 else crawlResult.httpStatusCode,
+                            latencyMs = 0L,
+                            detail = if (generatedSlots.isNotEmpty()) {
+                                "95+ 검수 완료 ${generatedSlots.size}건 생성" +
+                                    if (d1SyncedCount > 0) " · CF D1 ${d1SyncedCount}건 저장" else ""
+                            } else {
+                                "서버 DB/크롤링 매물이 0건이라 글을 생성하지 않았습니다 (인증·엔드포인트 확인 필요)"
+                            }
+                        )
+                    )
+                }
+
+                val pipelineOk = generatedSlots.isNotEmpty() || crawlResult.isSuccess || dbResult.d1TableNames.isNotEmpty()
+                val summaryText = when {
+                    generatedSlots.isNotEmpty() ->
+                        "딱찰 마스터 완료: DB ${dbResult.items.size}건 + 크롤링 ${crawlResult.items.size}건 → 95+ 글 ${generatedSlots.size}건 생성!"
+                    pipelineOk ->
+                        "서버 연동 확인(${dbResult.tables.size}테이블) · 조건에 맞는 신규 매물이 0건입니다."
+                    else ->
+                        "딱찰 서버 연동 실패: ${crawlResult.summaryMessage}"
+                }
+
+                _uiState.update { cur ->
+                    val nextSlots = if (generatedSlots.isNotEmpty()) {
+                        generatedSlots + cur.slots.filter { old ->
+                            generatedSlots.none { g -> g.auctionCase.dedupKey == old.auctionCase.dedupKey }
+                        }
+                    } else cur.slots
+                    val firstGenerated = generatedSlots.firstOrNull() ?: nextSlots.firstOrNull()
+                    val nextWh = if (warehouseArticlesToSave.isNotEmpty()) {
+                        warehouseArticlesToSave + cur.warehouseArticles.filter { old ->
+                            warehouseArticlesToSave.none { w -> w.warehouseId == old.warehouseId }
+                        }
+                    } else cur.warehouseArticles
+                    val nextTopics = TopicSelectionEngine.rankCandidates(
+                        slots = nextSlots,
+                        config = cur.config,
+                        proFunnel = cur.proFunnel,
+                        sortMode = cur.topicSelectionBoard.sortMode,
+                        naverKeywordDiagnosis = (cur.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        nowText = now
+                    )
+                    cur.copy(
+                        isBusy = false,
+                        slots = nextSlots,
+                        selectedSlotId = firstGenerated?.postId ?: cur.selectedSlotId,
+                        warehouseArticles = nextWh,
+                        activeCourtArchive = firstGenerated?.let {
+                            CourtEvidenceRecorder.recordFullArchiveForSlot(it)
+                        } ?: cur.activeCourtArchive,
+                        activeRegistryInfographic = firstGenerated?.let {
+                            RegistryInfographicEngine.buildTemplate(it.auctionCase, cur.selectedRegistryTemplateType)
+                        } ?: cur.activeRegistryInfographic,
+                        legalVerificationByCaseId = cur.legalVerificationByCaseId + newLegalMap,
+                        attractivenessByCaseId = cur.attractivenessByCaseId + newAttrMap,
+                        topicSelectionBoard = nextTopics,
+                        naverPublishStatuses = buildNaverPublishStatuses(nextSlots, cur.publishLogs, cur.config),
+                        telemetry = cur.telemetry.copy(
+                            ddakchalConnected = pipelineOk,
+                            cloudflareD1Connected = d1SyncedCount > 0 || dbResult.d1TableNames.isNotEmpty() || cur.telemetry.cloudflareD1Connected,
+                            lastSyncTime = if (pipelineOk) now else cur.telemetry.lastSyncTime,
+                            apiLatencyMs = crawlResult.latencyMs.takeIf { it > 0L } ?: cur.telemetry.apiLatencyMs,
+                            lastHttpStatusCode = crawlResult.httpStatusCode,
+                            lastErrorDetail = if (pipelineOk) null else summaryText,
+                            triggerStatus = crawlResult.triggerStatus ?: dbResult.triggerStatus ?: cur.telemetry.triggerStatus
+                        ),
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            discoveredTables = dbResult.tables,
+                            discoveredItems = mergedItems,
+                            generatedPostIds = generatedSlots.map { it.postId },
+                            stepLogs = combinedLogs,
+                            d1TablesRaw = dbResult.d1TableNames,
+                            lastUpdatedAt = now,
+                            summaryMessage = summaryText
+                        ),
+                        statusMessage = if (pipelineOk) summaryText else null,
+                        errorMessage = if (!pipelineOk) summaryText else null
+                    )
+                }
+                if (pipelineOk) {
+                    syncRealBlogQueueInternal(cfg = cfg, limit = 100, announceBanner = false)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = "전체 파이프라인 실행 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            summaryMessage = err
+                        ),
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    fun generatePostFromDiscoveredDbItem(recordId: String) {
+        val state = _uiState.value
+        val item = state.todakAdmin.discoveredItems.firstOrNull {
+            it.recordId == recordId || it.dedupKey == recordId || it.caseId == recordId
+        } ?: return
+        viewModelScope.launch {
+            _uiState.update { cur ->
+                cur.copy(
+                    isBusy = true,
+                    errorMessage = null,
+                    statusMessage = null,
+                    todakAdmin = cur.todakAdmin.copy(
+                        isRunning = true,
+                        currentActionLabel = "${item.caseId} DB 기준 95+ 3채널 원고 생성 중…"
+                    )
+                )
+            }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val now = currentTimestamp()
+                val (enrichedSlot, whArticle, legal, attractiveness) = buildEnriched95SlotFromServerSlot(
+                    rawSlot = item.slot,
+                    slotIndex = state.slots.size + 1,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    postTemplates = state.postTemplates,
+                    selectedRegTemplateType = state.selectedRegistryTemplateType,
+                    recentCorpus = corpus,
+                    nowText = now
+                )
+                val log = WritingActivityLog(
+                    logId = "wlog-dbgen-${System.currentTimeMillis()}",
+                    warehouseId = whArticle.warehouseId,
+                    caseId = enrichedSlot.auctionCase.caseId,
+                    actionTitle = "서버 DB 단건 → 95+ 원고 생성 (${whArticle.evaluation.totalScore}점)",
+                    score = whArticle.evaluation.totalScore,
+                    passedGate95 = whArticle.evaluation.eligibleForRegistration,
+                    detail = "${item.sourceOrigin} · ${enrichedSlot.auctionCase.address}",
+                    timestamp = now
+                )
+                val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+                val d1Res = if (state.config.cfAccountId.isNotBlank() &&
+                    state.config.cfD1DatabaseId.isNotBlank() &&
+                    state.config.cfApiToken.isNotBlank()
+                ) {
+                    repository.pushScheduledSlotToD1(state.config, enrichedSlot)
+                } else null
+
+                _uiState.update { cur ->
+                    val nextSlots = listOf(enrichedSlot) + cur.slots.filter {
+                        it.auctionCase.dedupKey != enrichedSlot.auctionCase.dedupKey
+                    }
+                    val nextTopics = TopicSelectionEngine.rankCandidates(
+                        slots = nextSlots,
+                        config = cur.config,
+                        proFunnel = cur.proFunnel,
+                        sortMode = cur.topicSelectionBoard.sortMode,
+                        naverKeywordDiagnosis = (cur.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        nowText = now
+                    )
+                    cur.copy(
+                        isBusy = false,
+                        slots = nextSlots,
+                        selectedSlotId = enrichedSlot.postId,
+                        warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + cur.warehouseArticles),
+                        writingLogs = snapshot?.writingLogs ?: (listOf(log) + cur.writingLogs),
+                        activeCourtArchive = CourtEvidenceRecorder.recordFullArchiveForSlot(enrichedSlot),
+                        activeRegistryInfographic = RegistryInfographicEngine.buildTemplate(
+                            enrichedSlot.auctionCase,
+                            cur.selectedRegistryTemplateType
+                        ),
+                        legalVerificationByCaseId = cur.legalVerificationByCaseId + (enrichedSlot.auctionCase.caseId to legal),
+                        attractivenessByCaseId = cur.attractivenessByCaseId + (enrichedSlot.auctionCase.caseId to attractiveness),
+                        topicSelectionBoard = nextTopics,
+                        naverPublishStatuses = buildNaverPublishStatuses(nextSlots, cur.publishLogs, cur.config),
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            generatedPostIds = (listOf(enrichedSlot.postId) + cur.todakAdmin.generatedPostIds).distinct(),
+                            lastUpdatedAt = now,
+                            summaryMessage = "${enrichedSlot.auctionCase.caseId} DB 기준 ${whArticle.evaluation.totalScore}점 3채널 글 생성 완료" +
+                                if (d1Res?.isSuccess == true) " (D1 반영)" else ""
+                        ),
+                        statusMessage = "${enrichedSlot.auctionCase.caseId} DB 기반 95+ 3채널 글 생성 및 창고 저장 완료 (${whArticle.evaluation.totalScore}점)"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = "DB 기준 글 생성 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        todakAdmin = cur.todakAdmin.copy(isRunning = false, currentActionLabel = "", summaryMessage = err),
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    fun setTodakCaseLookupInput(input: String) {
+        _uiState.update { state ->
+            state.copy(todakAdmin = state.todakAdmin.copy(caseLookupInput = input))
+        }
+    }
+
+    fun consumePendingAutoPreview() {
+        _uiState.update { state ->
+            if (state.pendingAutoPreviewSlotId == null) state
+            else state.copy(pendingAutoPreviewSlotId = null)
+        }
+    }
+
+    /**
+     * 법원 사건번호 입력 시 딱찰 서버에서 경매 사진·등기부(갑구/을구)·문서·방문기록을 불러와
+     * 95+ 점수로 칼분석 보강 후 자동으로 프리뷰 모달(ArticleQualityPreviewModal)을 연다.
+     */
+    fun lookupCaseNumberFromTodakAndAutoPreview(
+        rawCaseInput: String = _uiState.value.todakAdmin.caseLookupInput,
+        preferredTabIndex: Int = 0
+    ) {
+        val cleanInput = rawCaseInput.trim()
+        if (cleanInput.isBlank()) {
+            _uiState.update { cur ->
+                cur.copy(
+                    todakAdmin = cur.todakAdmin.copy(
+                        caseLookupStatus = "사건번호를 입력해 주세요. (예: 2025타경6297)"
+                    ),
+                    errorMessage = "사건번호를 입력해 주세요. (예: 2025타경6297)"
+                )
+            }
+            return
+        }
+        val state = _uiState.value
+        val cfg = state.config
+        viewModelScope.launch {
+            _uiState.update { cur ->
+                cur.copy(
+                    isBusy = true,
+                    errorMessage = null,
+                    statusMessage = null,
+                    todakAdmin = cur.todakAdmin.copy(
+                        caseLookupInput = cleanInput,
+                        isRunning = true,
+                        currentActionLabel = "딱찰 서버에서 '$cleanInput' 사진·등기·방문기록 조회 중…",
+                        caseLookupStatus = "딱찰 서버 조회 중 ($cleanInput)…"
+                    )
+                )
+            }
+            try {
+                val lookup = repository.lookupCourtCaseFromTodakServer(cfg, cleanInput)
+                val now = currentTimestamp()
+                val fetchedSlot = lookup.slot
+                if (!lookup.isSuccess || fetchedSlot == null) {
+                    _uiState.update { cur ->
+                        cur.copy(
+                            isBusy = false,
+                            telemetry = cur.telemetry.copy(
+                                lastHttpStatusCode = lookup.httpStatusCode,
+                                lastErrorDetail = lookup.message
+                            ),
+                            todakAdmin = cur.todakAdmin.copy(
+                                isRunning = false,
+                                currentActionLabel = "",
+                                stepLogs = lookup.stepLogs,
+                                lastUpdatedAt = now,
+                                caseLookupStatus = lookup.message,
+                                summaryMessage = lookup.message
+                            ),
+                            errorMessage = lookup.message
+                        )
+                    }
+                    return@launch
+                }
+
+                val corpus = repository.getRecent7DayCorpus()
+                val latestState = _uiState.value
+                val (enrichedSlot, whArticle, legal, attractiveness) = buildEnriched95SlotFromServerSlot(
+                    rawSlot = fetchedSlot,
+                    slotIndex = latestState.slots.size + 1,
+                    config = cfg,
+                    proFunnel = latestState.proFunnel,
+                    postTemplates = latestState.postTemplates,
+                    selectedRegTemplateType = latestState.selectedRegistryTemplateType,
+                    recentCorpus = corpus,
+                    nowText = now
+                )
+
+                val log = WritingActivityLog(
+                    logId = "wlog-case-lookup-${System.currentTimeMillis()}",
+                    warehouseId = whArticle.warehouseId,
+                    caseId = enrichedSlot.auctionCase.caseId,
+                    actionTitle = "사건조회 자동프리뷰 · 칼분석 (${whArticle.evaluation.totalScore}점)",
+                    score = whArticle.evaluation.totalScore,
+                    passedGate95 = whArticle.evaluation.eligibleForRegistration,
+                    detail = "${lookup.message} · ${enrichedSlot.auctionCase.address}",
+                    timestamp = now
+                )
+                val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+                val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(enrichedSlot)
+                val discoveredItem = ServerDbDiscoveredItem(
+                    recordId = enrichedSlot.postId,
+                    dedupKey = enrichedSlot.auctionCase.dedupKey,
+                    caseId = enrichedSlot.auctionCase.caseId,
+                    courtName = enrichedSlot.auctionCase.courtName,
+                    address = enrichedSlot.auctionCase.address,
+                    propertyType = enrichedSlot.auctionCase.propertyType,
+                    appraisalKrw = enrichedSlot.auctionCase.appraisalPriceKrw,
+                    minBidKrw = enrichedSlot.auctionCase.minBidPriceKrw,
+                    photoCount = enrichedSlot.courtPhotoUrls.count { it.isNotBlank() },
+                    visitCount = archive.visitRecords.size,
+                    hasAnalysisData = enrichedSlot.ddakchalAnalysisData != null || archive.sharpAnalysis != null,
+                    sourceOrigin = "사건번호 즉시조회",
+                    updatedAt = enrichedSlot.serverUpdatedAt.ifBlank { now },
+                    slot = enrichedSlot
+                )
+
+                _uiState.update { cur ->
+                    val nextSlots = listOf(enrichedSlot) + cur.slots.filter {
+                        it.auctionCase.dedupKey != enrichedSlot.auctionCase.dedupKey &&
+                            !it.auctionCase.caseId.equals(enrichedSlot.auctionCase.caseId, ignoreCase = true)
+                    }
+                    val nextDiscovered = listOf(discoveredItem) + cur.todakAdmin.discoveredItems.filter {
+                        it.dedupKey != discoveredItem.dedupKey
+                    }
+                    val nextTopics = TopicSelectionEngine.rankCandidates(
+                        slots = nextSlots,
+                        config = cur.config,
+                        proFunnel = cur.proFunnel,
+                        sortMode = cur.topicSelectionBoard.sortMode,
+                        naverKeywordDiagnosis = (cur.naverKeywordDiagnosis as? NaverKeywordDiagnosisUiState.Success)?.report,
+                        nowText = now
+                    )
+                    val readyStatus = "${enrichedSlot.auctionCase.caseId} 자동 프리뷰 준비 완료 (사진 ${archive.photos.count { it.imageUrl.isNotBlank() }}실사 · 등기 ${archive.registryGapGu.size + archive.registryEulGu.size}건 · 방문 ${archive.visitRecords.size}건 · 품질 ${whArticle.evaluation.totalScore}점)"
+                    cur.copy(
+                        isBusy = false,
+                        slots = nextSlots,
+                        selectedSlotId = enrichedSlot.postId,
+                        warehouseArticles = snapshot?.articles ?: (listOf(whArticle) + cur.warehouseArticles),
+                        writingLogs = snapshot?.writingLogs ?: (listOf(log) + cur.writingLogs),
+                        activeCourtArchive = archive,
+                        activeRegistryInfographic = RegistryInfographicEngine.buildTemplate(
+                            enrichedSlot.auctionCase,
+                            cur.selectedRegistryTemplateType
+                        ),
+                        legalVerificationByCaseId = cur.legalVerificationByCaseId + (enrichedSlot.auctionCase.caseId to legal),
+                        attractivenessByCaseId = cur.attractivenessByCaseId + (enrichedSlot.auctionCase.caseId to attractiveness),
+                        topicSelectionBoard = nextTopics,
+                        naverPublishStatuses = buildNaverPublishStatuses(nextSlots, cur.publishLogs, cur.config),
+                        telemetry = cur.telemetry.copy(
+                            ddakchalConnected = true,
+                            lastSyncTime = now,
+                            apiLatencyMs = lookup.latencyMs.takeIf { it > 0L } ?: cur.telemetry.apiLatencyMs,
+                            lastHttpStatusCode = lookup.httpStatusCode,
+                            lastErrorDetail = null
+                        ),
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            discoveredItems = nextDiscovered,
+                            generatedPostIds = (listOf(enrichedSlot.postId) + cur.todakAdmin.generatedPostIds).distinct(),
+                            stepLogs = lookup.stepLogs,
+                            lastUpdatedAt = now,
+                            caseLookupStatus = readyStatus,
+                            summaryMessage = readyStatus
+                        ),
+                        pendingAutoPreviewSlotId = enrichedSlot.postId,
+                        pendingAutoPreviewTab = preferredTabIndex.coerceIn(0, 3),
+                        pendingAutoPreviewNonce = cur.pendingAutoPreviewNonce + 1L,
+                        statusMessage = readyStatus
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val err = "사건번호 조회 오류: ${e.localizedMessage ?: "알 수 없는 오류"}"
+                _uiState.update { cur ->
+                    cur.copy(
+                        isBusy = false,
+                        todakAdmin = cur.todakAdmin.copy(
+                            isRunning = false,
+                            currentActionLabel = "",
+                            caseLookupStatus = err,
+                            summaryMessage = err
+                        ),
+                        errorMessage = err
+                    )
+                }
+            }
+        }
+    }
+
+    private data class Enriched95Bundle(
+        val slot: GeneratedPostSlot,
+        val warehouseArticle: WarehouseArticle,
+        val legal: LegalDoctrineReport,
+        val attractiveness: InvestmentAttractivenessScore
+    )
+
+    private fun buildEnriched95SlotFromServerSlot(
+        rawSlot: GeneratedPostSlot,
+        slotIndex: Int,
+        config: ServerAutomationConfig,
+        proFunnel: ProFunnelConfig,
+        postTemplates: List<BlogPostTemplate>,
+        selectedRegTemplateType: RegistryInfographicTemplateType,
+        recentCorpus: List<String>,
+        nowText: String
+    ): Enriched95Bundle {
+        val auction = rawSlot.auctionCase
+        val activeTemplatesForType = postTemplates.filter {
+            it.propertyType == auction.propertyType && it.isActiveForGeneration && !it.isPreset
+        }
+        val templatedVariants = if (activeTemplatesForType.isNotEmpty()) {
+            rawSlot.variants.mapValues { (platform, variant) ->
+                val matched = activeTemplatesForType.firstOrNull { it.targetChannel == platform }
+                if (matched != null) {
+                    BlogPostTemplateEngine.applyTemplateToVariant(variant, matched, auction, config, proFunnel)
+                } else variant
+            }
+        } else {
+            rawSlot.variants
+        }
+        val scheduled = repository.computeStaggeredSchedule(
+            rawSlot.publishDate.ifBlank { PostAuctionFollowUpEngine.currentIsoDate() },
+            slotIndex,
+            config
+        )
+        val draft = rawSlot.copy(
+            slotIndex = slotIndex,
+            variants = templatedVariants,
+            scheduledTimes = scheduled,
+            sourceLabel = rawSlot.sourceLabel.ifBlank { "딱찰 DB 자동생성" }
+        )
+        val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+            slot = draft,
+            config = config,
+            proFunnel = proFunnel,
+            recent7DayCorpus = recentCorpus,
+            maxIterations = 3
+        )
+        val finalSlot = fixed.slot.copy(
+            status = if (fixed.passedGate95) PostStatus.QUEUED else PostStatus.DRAFT
+        )
+        val regTemplate = RegistryInfographicEngine.buildTemplate(finalSlot.auctionCase, selectedRegTemplateType)
+        val eval = Article30PointEvaluator.evaluate(finalSlot, config, proFunnel, regTemplate, recentCorpus)
+        val legal = LegalDoctrineVerifier.verify(finalSlot.auctionCase)
+        val attractiveness = InvestmentAttractivenessEngine.score(finalSlot.auctionCase, legal)
+        val whArticle = WarehouseArticle(
+            warehouseId = "wh-${finalSlot.auctionCase.dedupKey}",
+            slot = finalSlot,
+            evaluation = eval,
+            registryInfographic = regTemplate,
+            warehouseStatus = if (eval.eligibleForRegistration) WarehouseArticleStatus.STORED_READY else WarehouseArticleStatus.NEEDS_IMPROVEMENT,
+            createdAt = nowText
+        )
+        return Enriched95Bundle(
+            slot = finalSlot,
+            warehouseArticle = whArticle,
+            legal = legal,
+            attractiveness = attractiveness
+        )
     }
 
     private fun selectedPlatformsFromConfig(config: ServerAutomationConfig): List<ChannelPlatform> {

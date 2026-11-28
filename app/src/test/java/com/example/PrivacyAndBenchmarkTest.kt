@@ -53,7 +53,7 @@ class PrivacyAndBenchmarkTest {
     fun qaAnd30PointEvaluator_rejectPersonalInfoLeakAndMissingSignupFunnel() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val baseSlot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel).first()
+        val baseSlot = TestFixtures.sampleSlots(cfg, funnel).first()
 
         // 1. Inject debtor name & masked tenant surname into Naver body
         val leakedNaver = baseSlot.variants[ChannelPlatform.NAVER]!!.copy(
@@ -98,9 +98,9 @@ class PrivacyAndBenchmarkTest {
     fun allDefaultSlotsAndBusanCases_haveZeroPii_exceedPaidApps_andIncludeDdakchalSignupFunnel() {
         val cfg = ServerAutomationConfig()
         val funnel = ProFunnelConfig()
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg, funnel).toMutableList()
+        val slots = TestFixtures.sampleSlots(cfg, funnel).toMutableList()
 
-        CourtEvidenceRecorder.findProfitableBusanLandUnder50M().forEachIndexed { idx, auction ->
+        TestFixtures.sampleBusanLands().forEachIndexed { idx, auction ->
             val variants = DefaultSpecDataFactory.buildDistinct3ChannelVariants(auction, idx + 5, cfg, proFunnel = funnel)
             val scheduled = mapOf(
                 ChannelPlatform.CLOUDFLARE to "2026-11-22 08:17",
@@ -149,7 +149,14 @@ class PrivacyAndBenchmarkTest {
             assertTrue(report.rateStressMonthlyDeltaKrw > 0L)
             assertTrue(report.privacyMaskedConfirmed)
 
-            val archive = CourtEvidenceRecorder.recordFullArchive(slot.auctionCase)
+            val archive = CourtEvidenceRecorder.recordFullArchive(
+                auction = slot.auctionCase,
+                courtPhotoUrls = slot.courtPhotoUrls,
+                customVisitRecords = slot.visitRecords,
+                serverGapGu = TestFixtures.sampleGapGu(slot.auctionCase.caseId, slot.auctionCase.courtName),
+                serverEulGu = TestFixtures.sampleEulGu(slot.auctionCase.caseId, slot.auctionCase.baseRightDate),
+                serverDocuments = TestFixtures.sampleDocuments(slot.auctionCase.caseId, slot.auctionCase.courtName)
+            )
             val archiveText = archive.documents.flatMap { it.fullRecordLines }.joinToString("\n")
             assertTrue(PrivacySanitizerEngine.detectPersonalInfoLeaks(archiveText).isEmpty())
 

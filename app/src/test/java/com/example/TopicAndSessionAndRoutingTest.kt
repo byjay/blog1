@@ -11,12 +11,12 @@ import com.example.data.CloudflareAndDdakchalApi
 import com.example.data.DirectChannelPublishClient
 import com.example.data.PostWarehouseStore
 import com.example.data.ServerConfigStore
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.HtmlExportEngine
 import com.example.engine.TopicSelectionEngine
 import com.example.model.ChannelPlatform
 import com.example.model.NaverAutoWriteMode
 import com.example.model.ProFunnelConfig
+import com.example.model.PropertyType
 import com.example.model.ServerAutomationConfig
 import com.example.model.TopicSortCriteria
 import com.example.ui.StudioViewModel
@@ -94,7 +94,7 @@ class TopicAndSessionAndRoutingTest {
     fun `html export generates pureHtml and bodyOnlyHtml under 450KB and copies safely`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val cfg = ServerAutomationConfig()
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg)
+        val slots = TestFixtures.sampleSlots(cfg)
         val bundle = HtmlExportEngine.buildThreePureHtmlBatch(
             slots = slots,
             threeCasesMode = true,
@@ -125,7 +125,7 @@ class TopicAndSessionAndRoutingTest {
     @Test
     fun `topic selection ranks across 4 pillars and supports all 5 sort criteria`() {
         val cfg = ServerAutomationConfig()
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg)
+        val slots = TestFixtures.sampleSlots(cfg)
         val boardBalanced = TopicSelectionEngine.rankCandidates(
             slots = slots,
             config = cfg,
@@ -265,7 +265,7 @@ class TopicAndSessionAndRoutingTest {
         )
         val service = FirebaseAiSeoGeoService(grokFallbackClient = grokClient)
         val cfg = ServerAutomationConfig(grokFallbackEnabled = true, grokModelName = "grok-3-mini")
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg).first()
+        val slot = TestFixtures.sampleSlots(cfg).first()
 
         val outcome = service.evaluateWith30Criteria(slot, cfg, ProFunnelConfig())
         assertTrue(outcome is AiEvaluationOutcome.Success)
@@ -282,7 +282,7 @@ class TopicAndSessionAndRoutingTest {
             naverBlogId = "my_auction_blog",
             tistoryBlogUrl = "https://my-auction.tistory.com"
         )
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(cfg).first()
+        val slot = TestFixtures.sampleSlots(cfg).first()
         val client = DirectChannelPublishClient()
         val destinations = client.buildDestinations(cfg)
         val cfDest = destinations.first { it.platform == ChannelPlatform.CLOUDFLARE }
@@ -308,6 +308,19 @@ class TopicAndSessionAndRoutingTest {
             postWarehouseStore = createWarehouseStore(this)
         )
         val vm = StudioViewModel(repo)
+        TestFixtures.sampleAuctions().take(3).forEach { auction ->
+            vm.addCustomCrawledPropertyAndSchedule(
+                caseId = auction.caseId,
+                courtName = auction.courtName,
+                address = auction.address,
+                propertyType = auction.propertyType,
+                appraisalManWon = auction.appraisalPriceKrw / 10_000L,
+                minBidManWon = auction.minBidPriceKrw / 10_000L,
+                baseRightDate = auction.baseRightDate,
+                assumedRights = auction.assumedRightsText,
+                publishDate = "2026-11-24"
+            )
+        }
 
         vm.saveQuickSettings(
             cloudflareSiteBase = "https://aution.codeb.app",

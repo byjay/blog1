@@ -110,8 +110,10 @@ fun WarehouseAndVisitorDashboardScreen(
     ) {
         item {
             SectionHeader(
-                title = "글 창고 · 자동 등록",
-                subtitle = "버튼 1회로 95점+ 자동 교정 후 선택 채널 바로 등록"
+                title = "글 창고 · 자동 등록 · 방문자 로그",
+                subtitle = "버튼 1회로 95점+ 자동 교정 후 선택 채널 바로 등록",
+                icon = Icons.Filled.Inventory2,
+                easyGuide = "저장된 블로그 글 재고와 실제 방문자·DB 문의 유입 기록을 위 탭으로 전환해 관리합니다."
             )
             Spacer(modifier = Modifier.height(8.dp))
             Row(
@@ -204,15 +206,36 @@ fun WarehouseAndVisitorDashboardScreen(
                 }
             }
 
-            items(filteredArticles, key = { it.warehouseId }) { item ->
-                SimpleWarehouseArticleCard(
-                    item = item,
-                    isBusy = uiState.isBusy,
-                    onAutoRegister = { onAutoFixAndRegisterSlot(item.slot.postId) },
-                    onRun30Eval = { onRun30PointEval(item.warehouseId) },
-                    onInspectQa = { onInspectArticleInQa(item.slot.postId) },
-                    onDelete = { onDeleteWarehouseArticle(item.warehouseId) }
-                )
+            if (filteredArticles.isEmpty()) {
+                item(key = "empty_warehouse_card") {
+                    StudioCard(
+                        borderColor = NavyBorder,
+                        modifier = Modifier.testTag("empty_warehouse_card")
+                    ) {
+                        Text(
+                            text = "창고에 보관된 실제 원고가 아직 없습니다.",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "발행큐에서 실제 법원 사건번호를 조회하거나 서버 DB 탐색으로 물건을 불러온 뒤 검수·보관하세요.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                }
+            } else {
+                items(filteredArticles, key = { it.warehouseId }) { item ->
+                    SimpleWarehouseArticleCard(
+                        item = item,
+                        isBusy = uiState.isBusy,
+                        onAutoRegister = { onAutoFixAndRegisterSlot(item.slot.postId) },
+                        onRun30Eval = { onRun30PointEval(item.warehouseId) },
+                        onInspectQa = { onInspectArticleInQa(item.slot.postId) },
+                        onDelete = { onDeleteWarehouseArticle(item.warehouseId) }
+                    )
+                }
             }
         } else {
             val today = uiState.visitorLogs.firstOrNull()
@@ -255,41 +278,62 @@ fun WarehouseAndVisitorDashboardScreen(
                 )
             }
 
-            items(uiState.visitorLogs, key = { it.dateLabel }) { vLog ->
-                StudioCard(containerColor = NavySurfaceElevated) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+            if (uiState.visitorLogs.isEmpty() && uiState.writingLogs.isEmpty()) {
+                item(key = "empty_logs_card") {
+                    StudioCard(
+                        borderColor = NavyBorder,
+                        modifier = Modifier.testTag("empty_logs_card")
                     ) {
-                        Text(vLog.dateLabel, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
-                        StatusChip("총 ${vLog.totalViews}명", CloudflareSky, CloudflareContainer)
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        "네이버 ${vLog.naverViews} · 자체웹 ${vLog.cloudflareViews} · 티스토리 ${vLog.tistoryViews} · 수익 ${QaVerificationEngine.formatKrwShort(vLog.estimatedAdpostKrw)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
-                }
-            }
-
-            items(uiState.writingLogs, key = { it.logId }) { wLog ->
-                StudioCard(containerColor = NavySurface) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(wLog.caseId, style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily), color = TextPrimary)
-                        StatusChip(
-                            text = "${wLog.score}점",
-                            textColor = if (wLog.passedGate95) MintSecondary else CrimsonAlert,
-                            backgroundColor = if (wLog.passedGate95) EmeraldContainer else CrimsonContainer
+                        Text(
+                            text = "수집된 실서버 방문자·작성 로그가 없습니다.",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextPrimary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "더미 방문 통계를 표시하지 않습니다. '갱신' 버튼으로 실서버 통계를 조회하거나 실사건을 생성하세요.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
                         )
                     }
-                    Text(wLog.actionTitle, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
-                    Text(wLog.timestamp, style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                }
+            } else {
+                items(uiState.visitorLogs, key = { it.dateLabel }) { vLog ->
+                    StudioCard(containerColor = NavySurfaceElevated) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(vLog.dateLabel, style = MaterialTheme.typography.titleSmall, color = TextPrimary)
+                            StatusChip("총 ${vLog.totalViews}명", CloudflareSky, CloudflareContainer)
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "네이버 ${vLog.naverViews} · 자체웹 ${vLog.cloudflareViews} · 티스토리 ${vLog.tistoryViews} · 수익 ${QaVerificationEngine.formatKrwShort(vLog.estimatedAdpostKrw)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
+                }
+
+                items(uiState.writingLogs, key = { it.logId }) { wLog ->
+                    StudioCard(containerColor = NavySurface) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(wLog.caseId, style = MaterialTheme.typography.labelLarge.copy(fontFamily = JetBrainsMonoFamily), color = TextPrimary)
+                            StatusChip(
+                                text = "${wLog.score}점",
+                                textColor = if (wLog.passedGate95) MintSecondary else CrimsonAlert,
+                                backgroundColor = if (wLog.passedGate95) EmeraldContainer else CrimsonContainer
+                            )
+                        }
+                        Text(wLog.actionTitle, style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                        Text(wLog.timestamp, style = MaterialTheme.typography.labelSmall, color = TextMuted)
+                    }
                 }
             }
         }

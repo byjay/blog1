@@ -1,6 +1,5 @@
 package com.example
 
-import com.example.engine.DefaultSpecDataFactory
 import com.example.engine.QaVerificationEngine
 import com.example.model.ChannelPlatform
 import com.example.model.ServerAutomationConfig
@@ -14,7 +13,7 @@ class QaVerificationEngineTest {
     @Test
     fun daily5Slots_passCrossChannelSimilarityAndFactCheck() {
         val config = ServerAutomationConfig(enableExternalLinkNaver = false)
-        val slots = DefaultSpecDataFactory.buildInitialDaily5Slots(config)
+        val slots = TestFixtures.sampleSlots(config)
         assertEquals(5, slots.size)
 
         slots.forEach { slot ->
@@ -34,7 +33,7 @@ class QaVerificationEngineTest {
     @Test
     fun duplicateTextBetweenChannels_isBlockedBySimilarityGate() {
         val config = ServerAutomationConfig(enableExternalLinkNaver = false)
-        val slot = DefaultSpecDataFactory.buildInitialDaily5Slots(config).first()
+        val slot = TestFixtures.sampleSlots(config).first()
         val cfVariant = slot.variants[ChannelPlatform.CLOUDFLARE]!!
         val duplicatedVariants = slot.variants.toMutableMap().apply {
             put(ChannelPlatform.TISTORY, slot.variants[ChannelPlatform.TISTORY]!!.copy(bodyText = cfVariant.bodyText))
