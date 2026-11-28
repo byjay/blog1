@@ -460,6 +460,240 @@ object HtmlExportEngine {
         }.trimEnd()
     }
 
+    fun buildLinkedHtmlSlug(caseId: String, dedupKey: String, channel: ChannelPlatform): String {
+        val raw = (dedupKey.ifBlank { caseId }).ifBlank { "post" }
+        val safe = raw.replace(Regex("[^a-zA-Z0-9_\\-가-힣]"), "_")
+        return "ddakchal_${safe}_${channel.code.lowercase()}.html"
+    }
+
+    fun buildLinkedHtmlCatalog(
+        slots: List<GeneratedPostSlot>,
+        warehouseArticles: List<com.example.model.WarehouseArticle>,
+        publishLogs: List<com.example.model.PublishLogEntry>,
+        config: ServerAutomationConfig,
+        proFunnel: com.example.model.ProFunnelConfig = com.example.model.ProFunnelConfig(),
+        preferredChannel: ChannelPlatform = ChannelPlatform.CLOUDFLARE
+    ): List<com.example.model.LinkedHtmlArticleEntry> {
+        val mergedByKey = linkedMapOf<String, GeneratedPostSlot>()
+        slots.forEach { slot ->
+            mergedByKey[slot.postId] = slot
+        }
+        warehouseArticles.forEach { wh ->
+            if (!mergedByKey.containsKey(wh.slot.postId) &&
+                mergedByKey.values.none { it.auctionCase.caseId == wh.slot.auctionCase.caseId }
+            ) {
+                mergedByKey[wh.slot.postId] = wh.slot
+            }
+        }
+
+        val cfSiteBase = config.cloudflareSiteBase.trim().removeSuffix("/").ifBlank { "https://aution.codeb.app" }
+        val cfPath = config.cloudflareBlogPath.trim().let { if (it.startsWith("/")) it else "/$it" }
+
+        return mergedByKey.values.map { slot ->
+            val whMatch = warehouseArticles.firstOrNull { it.slot.postId == slot.postId }
+            val evalScore = whMatch?.evaluation?.totalScore
+                ?: Article30PointEvaluator.evaluate(slot, config, proFunnel).totalScore
+
+            val urlsByPlatform = linkedMapOf<ChannelPlatform, String>()
+            slot.publishedUrls.forEach { (platform, url) ->
+                if (url.startsWith("http://", ignoreCase = true) || url.startsWith("https://", ignoreCase = true)) {
+                    urlsByPlatform[platform] = url.trim()
+                }
+            }
+            publishLogs
+                .filter {
+                    (it.postId == slot.postId || it.caseId == slot.auctionCase.caseId) &&
+                        it.status == com.example.model.PostStatus.PUBLISHED &&
+                        !it.publishedUrl.isNullOrBlank()
+                }
+                .forEach { log ->
+                    val u = log.publishedUrl.orEmpty().trim()
+                    if ((u.startsWith("http://", ignoreCase = true) || u.startsWith("https://", ignoreCase = true)) &&
+                        !urlsByPlatform.containsKey(log.platform)
+                    ) {
+                        urlsByPlatform[log.platform] = u
+                    }
+                }
+
+            val defaultChannel = when {
+                urlsByPlatform.containsKey(preferredChannel) -> preferredChannel
+                slot.variants.containsKey(preferredChannel) -> preferredChannel
+                slot.variants.containsKey(ChannelPlatform.CLOUDFLARE) -> ChannelPlatform.CLOUDFLARE
+                else -> slot.variants.keys.firstOrNull() ?: ChannelPlatform.CLOUDFLARE
+            }
+            val activeVariant = slot.variants[defaultChannel] ?: slot.variants.values.firstOrNull()
+            val title = activeVariant?.title?.ifBlank { "${slot.auctionCase.caseId} ${slot.auctionCase.address}" }
+                ?: "${slot.auctionCase.caseId} ${slot.auctionCase.address}"
+            val archive = CourtEvidenceRecorder.recordFullArchiveForSlot(slot)
+
+            com.example.model.LinkedHtmlArticleEntry(
+                postId = slot.postId,
+                caseId = slot.auctionCase.caseId,
+                dedupKey = slot.auctionCase.dedupKey,
+                title = title,
+                courtName = slot.auctionCase.courtName,
+                address = slot.auctionCase.address,
+                propertyTypeLabel = slot.auctionCase.propertyType.displayLabel,
+                status = if (urlsByPlatform.isNotEmpty()) com.example.model.PostStatus.PUBLISHED else slot.status,
+                publishDate = slot.publishDate,
+                score = evalScore,
+                defaultChannel = defaultChannel,
+                publishedUrls = urlsByPlatform,
+                cloudflareExpectedUrl = "$cfSiteBase$cfPath/${slot.auctionCase.dedupKey}",
+                inAppHubTargetUri = "ddakchal://post/${slot.postId}/${defaultChannel.code.lowercase()}",
+                relativeHtmlFilename = buildLinkedHtmlSlug(slot.auctionCase.caseId, slot.auctionCase.dedupKey, defaultChannel),
+                photoCount = archive.photos.size,
+                registryCount = archive.registryGapGu.size + archive.registryEulGu.size,
+                visitCount = archive.visitRecords.size
+            )
+        }
+    }
+
+    fun renderHubIndexHtml(
+        entries: List<com.example.model.LinkedHtmlArticleEntry>,
+        config: ServerAutomationConfig,
+        generatedAt: String,
+        forExternalFileExport: Boolean = false
+    ): String {
+        val webPublishedCount = entries.count { it.publishedUrls.isNotEmpty() }
+        val highScoreCount = entries.count { it.score >= 95 }
+        return buildString {
+            appendLine("<!DOCTYPE html>")
+            appendLine("<html lang=\"ko\">")
+            appendLine("<head>")
+            appendLine("  <meta charset=\"UTF-8\" />")
+            appendLine("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />")
+            appendLine("  <title>딱찰 컨트롤타워 · 생성 글 HTML 목차 허브</title>")
+            appendLine("  <style>")
+            appendLine("    * { box-sizing: border-box; }")
+            appendLine("    body { font-family: -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; margin: 0; padding: 16px; background: #0b1324; color: #e2e8f0; line-height: 1.6; }")
+            appendLine("    .hub-wrap { max-width: 820px; margin: 0 auto; }")
+            appendLine("    .hero { background: linear-gradient(135deg, #0f172a, #102a43); border: 1px solid #38bdf8; border-radius: 14px; padding: 18px; margin-bottom: 16px; }")
+            appendLine("    .hero h1 { margin: 0 0 6px; font-size: 1.32rem; color: #f8fafc; }")
+            appendLine("    .hero p { margin: 0; font-size: 0.9rem; color: #94a3b8; }")
+            appendLine("    .kpi-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }")
+            appendLine("    .kpi-chip { background: #1e293b; border: 1px solid #334155; border-radius: 999px; padding: 5px 12px; font-size: 0.82rem; font-weight: 700; color: #38bdf8; }")
+            appendLine("    .card { background: #111c33; border: 1px solid #26354d; border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }")
+            appendLine("    .card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }")
+            appendLine("    .case-badge { font-weight: 800; color: #34d399; font-size: 0.95rem; }")
+            appendLine("    .score-badge { background: #064e3b; color: #6ee7b7; border-radius: 999px; padding: 3px 10px; font-size: 0.78rem; font-weight: 700; }")
+            appendLine("    .card h2 { margin: 8px 0 4px; font-size: 1.04rem; color: #f8fafc; }")
+            appendLine("    .card h2 a { color: #f8fafc; text-decoration: none; }")
+            appendLine("    .card h2 a:hover { color: #38bdf8; text-decoration: underline; }")
+            appendLine("    .meta { font-size: 0.84rem; color: #94a3b8; margin-bottom: 10px; }")
+            appendLine("    .link-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }")
+            appendLine("    .btn-link { display: inline-block; padding: 8px 12px; border-radius: 8px; font-size: 0.84rem; font-weight: 700; text-decoration: none; }")
+            appendLine("    .btn-primary { background: #10b981; color: #06281e; }")
+            appendLine("    .btn-ch { background: #1e293b; color: #38bdf8; border: 1px solid #38bdf8; }")
+            appendLine("    .btn-web { background: #064e3b; color: #6ee7b7; border: 1px solid #10b981; }")
+            appendLine("    .empty-box { background: #111c33; border: 1px dashed #475569; border-radius: 12px; padding: 28px 16px; text-align: center; color: #94a3b8; }")
+            appendLine("  </style>")
+            appendLine("</head>")
+            appendLine("<body>")
+            appendLine("  <main class=\"hub-wrap\">")
+            appendLine("    <header class=\"hero\">")
+            appendLine("      <h1>딱찰 컨트롤타워 · 생성 글 HTML 목차 허브</h1>")
+            appendLine("      <p>생성된 경매 분석 글을 클릭하면 상세 HTML 페이지로 바로 이동합니다. (기준시각: ${escapeHtml(generatedAt)} · 서버: ${escapeHtml(config.ddakchalApiBase)})</p>")
+            appendLine("      <div class=\"kpi-row\">")
+            appendLine("        <span class=\"kpi-chip\">전체 생성 글 ${entries.size}건</span>")
+            appendLine("        <span class=\"kpi-chip\" style=\"color:#6ee7b7;\">95점+ 통과 ${highScoreCount}건</span>")
+            appendLine("        <span class=\"kpi-chip\" style=\"color:#fbbf24;\">웹URL 발행 ${webPublishedCount}건</span>")
+            appendLine("      </div>")
+            appendLine("    </header>")
+            if (entries.isEmpty()) {
+                appendLine("    <section class=\"empty-box\">")
+                appendLine("      <strong>아직 생성된 글이 없습니다.</strong><br />")
+                appendLine("      컨트롤타워 상단에서 법원 사건번호를 조회하거나 딱찰 DB 탐색·크롤링을 실행해 글을 생성하면 이곳에 HTML 링크가 자동으로 연결됩니다.")
+                appendLine("    </section>")
+            } else {
+                entries.forEachIndexed { idx, entry ->
+                    val primaryHref = if (forExternalFileExport) {
+                        "./${buildLinkedHtmlSlug(entry.caseId, entry.dedupKey, entry.defaultChannel)}"
+                    } else {
+                        "ddakchal://post/${entry.postId}/${entry.defaultChannel.code.lowercase()}"
+                    }
+                    appendLine("    <article class=\"card\" data-case-id=\"${escapeHtml(entry.caseId)}\">")
+                    appendLine("      <div class=\"card-top\">")
+                    appendLine("        <span class=\"case-badge\">#${idx + 1} · ${escapeHtml(entry.caseId)} · ${escapeHtml(entry.propertyTypeLabel)}</span>")
+                    appendLine("        <span class=\"score-badge\">${entry.score}점 · ${escapeHtml(entry.status.label)}</span>")
+                    appendLine("      </div>")
+                    appendLine("      <h2><a href=\"$primaryHref\">${escapeHtml(entry.title)}</a></h2>")
+                    appendLine("      <div class=\"meta\">${escapeHtml(entry.courtName)} · ${escapeHtml(entry.address)}<br />예약일 ${escapeHtml(entry.publishDate)} · 법원사진 ${entry.photoCount}컷 · 등기 ${entry.registryCount}건 · 방문기록 ${entry.visitCount}건</div>")
+                    appendLine("      <div class=\"link-row\">")
+                    appendLine("        <a class=\"btn-link btn-primary\" href=\"$primaryHref\">상세 HTML 열기 →</a>")
+                    ChannelPlatform.entries.forEach { ch ->
+                        val chHref = if (forExternalFileExport) {
+                            "./${buildLinkedHtmlSlug(entry.caseId, entry.dedupKey, ch)}"
+                        } else {
+                            "ddakchal://post/${entry.postId}/${ch.code.lowercase()}"
+                        }
+                        appendLine("        <a class=\"btn-link btn-ch\" href=\"$chHref\">${escapeHtml(ch.displayName)} HTML</a>")
+                    }
+                    entry.publishedUrls.forEach { (platform, liveUrl) ->
+                        appendLine("        <a class=\"btn-link btn-web\" href=\"${escapeHtml(liveUrl)}\" target=\"_blank\" rel=\"noopener noreferrer\">웹 링크 (${escapeHtml(platform.displayName)}) ↗</a>")
+                    }
+                    appendLine("      </div>")
+                    if (entry.publishedUrls.isEmpty()) {
+                        appendLine("      <div class=\"meta\" style=\"margin-top:8px;margin-bottom:0;\">실제 웹URL 미발행 · 예상 자체웹 경로: ${escapeHtml(entry.cloudflareExpectedUrl)}</div>")
+                    }
+                    appendLine("    </article>")
+                }
+            }
+            appendLine("  </main>")
+            appendLine("</body>")
+            appendLine("</html>")
+        }.trim()
+    }
+
+    fun renderLinkedArticleDetailHtml(
+        slot: GeneratedPostSlot,
+        channel: ChannelPlatform,
+        config: ServerAutomationConfig,
+        evaluation: ArticleEvaluationResult? = null,
+        localPhotoDataUris: Map<Int, String> = emptyMap(),
+        forExternalFileExport: Boolean = false,
+        hubHref: String = if (forExternalFileExport) "./ddakchal_hub.html" else "ddakchal://hub"
+    ): String {
+        val variant = slot.variants[channel]
+            ?: slot.variants[ChannelPlatform.CLOUDFLARE]
+            ?: slot.variants.values.first()
+        val baseHtml = renderWebViewPreviewHtml(
+            slot = slot,
+            variant = variant,
+            config = config,
+            evaluation = evaluation,
+            localPhotoDataUris = localPhotoDataUris
+        )
+        val liveUrl = slot.publishedUrls[channel].orEmpty().ifBlank {
+            slot.publishedUrls.values.firstOrNull().orEmpty()
+        }
+        val channelLinks = ChannelPlatform.entries.joinToString("") { ch ->
+            val href = if (forExternalFileExport) {
+                "./${buildLinkedHtmlSlug(slot.auctionCase.caseId, slot.auctionCase.dedupKey, ch)}"
+            } else {
+                "ddakchal://post/${slot.postId}/${ch.code.lowercase()}"
+            }
+            val activeStyle = if (ch == variant.platform) {
+                "background:#10b981;color:#06281e;border-color:#10b981;"
+            } else {
+                "background:#1e293b;color:#e2e8f0;border-color:#475569;"
+            }
+            "<a href=\"$href\" style=\"display:inline-block;padding:6px 10px;border-radius:8px;border:1px solid;font-size:12px;font-weight:700;text-decoration:none;$activeStyle\">${escapeHtml(ch.displayName)}</a>"
+        }
+        val liveUrlBadge = if (liveUrl.isNotBlank()) {
+            "<a href=\"${escapeHtml(liveUrl)}\" target=\"_blank\" rel=\"noopener noreferrer\" style=\"display:inline-block;padding:6px 10px;border-radius:8px;background:#0284c7;color:#ffffff;font-size:12px;font-weight:700;text-decoration:none;\">실제 웹 게시물 열기 ↗</a>"
+        } else {
+            ""
+        }
+        val navStrip = buildString {
+            appendLine("  <nav class=\"ddakchal-hub-nav\" style=\"background:#0f172a;color:#f8fafc;border-radius:12px;padding:10px 12px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:space-between;\">")
+            appendLine("    <a href=\"$hubHref\" style=\"display:inline-block;padding:6px 11px;border-radius:8px;background:#38bdf8;color:#082f49;font-size:12px;font-weight:800;text-decoration:none;\">← 목록 허브 HTML</a>")
+            appendLine("    <div style=\"display:flex;flex-wrap:wrap;gap:6px;align-items:center;\">$channelLinks$liveUrlBadge</div>")
+            appendLine("  </nav>")
+        }
+        return baseHtml.replace("<body>", "<body>\n$navStrip")
+    }
+
     private fun escapeHtml(raw: String): String = raw
         .replace("&", "&amp;")
         .replace("<", "&lt;")

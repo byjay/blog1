@@ -25,7 +25,9 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Gavel
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
@@ -109,6 +111,8 @@ fun TodakAdminConsoleCard(
     onNavigateServer: () -> Unit,
     onCaseLookupInputChange: (String) -> Unit = {},
     onLookupCaseAndAutoPreview: (caseInput: String, preferredTab: Int) -> Unit = { _, _ -> },
+    onOpenHtmlLinkHub: () -> Unit = {},
+    onOpenHtmlHubViewer: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val admin = uiState.todakAdmin
@@ -176,13 +180,13 @@ fun TodakAdminConsoleCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 Column {
                     Text(
-                        text = "최상단 관리자 대시보드 · 딱찰 마스터",
+                        text = "딱찰 컨트롤타워 · 최상단 지휘 콘솔",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = TextPrimary
                     )
                     Text(
-                        text = "전용 관리자: $ownerEmail · ${config.ddakchalApiBase}",
+                        text = "총괄 관제: $ownerEmail · ${config.ddakchalApiBase}",
                         style = MaterialTheme.typography.bodySmall,
                         color = CloudflareSky,
                         maxLines = 1,
@@ -362,6 +366,34 @@ fun TodakAdminConsoleCard(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(if (showAuthPanel) "서버키 접기" else "서버·D1 키")
+            }
+            Button(
+                onClick = onOpenHtmlLinkHub,
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("btn_admin_nav_html_hub"),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CloudflareContainer,
+                    contentColor = CloudflareSky
+                )
+            ) {
+                Icon(Icons.Filled.Link, contentDescription = "HTML 링크함 열기", modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                val totalLinkedCount = remember(uiState.slots, uiState.warehouseArticles) {
+                    (uiState.slots.map { it.postId } + uiState.warehouseArticles.map { it.slot.postId }).distinct().size
+                }
+                Text("HTML 링크함($totalLinkedCount)", fontWeight = FontWeight.Bold)
+            }
+            OutlinedButton(
+                onClick = onOpenHtmlHubViewer,
+                modifier = Modifier
+                    .height(48.dp)
+                    .testTag("btn_admin_open_html_hub"),
+                border = BorderStroke(1.dp, MintSecondary.copy(alpha = 0.65f))
+            ) {
+                Icon(Icons.Filled.Public, contentDescription = "허브 HTML 바로 열기", tint = MintSecondary, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("허브 HTML", color = MintSecondary)
             }
             TextButton(
                 onClick = onNavigateWarehouse,
@@ -849,7 +881,7 @@ fun TodakAdminConsoleCard(
                                 ) {
                                     Icon(Icons.Filled.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("이 DB로 95+ 글 생성", fontWeight = FontWeight.Bold, maxLines = 1)
+                                    Text("글 생성 · 미리보기", fontWeight = FontWeight.Bold, maxLines = 1)
                                 }
                                 OutlinedButton(
                                     onClick = { onInspectSlot(item.slot.postId) },

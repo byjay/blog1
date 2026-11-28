@@ -52,6 +52,8 @@ import com.example.model.FieldVisitRecord
 import com.example.model.GeneratedPostSlot
 import com.example.model.GoogleGeminiAccountState
 import com.example.model.HtmlBatchBundleState
+import com.example.model.HtmlLinkFilter
+import com.example.model.HtmlViewerTarget
 import com.example.model.InvestmentAttractivenessScore
 import com.example.model.LegalDoctrineReport
 import com.example.model.LegalStudyCategory
@@ -174,6 +176,9 @@ data class StudioUiState(
     val pendingAutoPreviewSlotId: String? = null,
     val pendingAutoPreviewTab: Int = 0,
     val pendingAutoPreviewNonce: Long = 0L,
+    val showHtmlLinkHub: Boolean = false,
+    val htmlLinkFilter: HtmlLinkFilter = HtmlLinkFilter.ALL,
+    val activeHtmlViewerTarget: HtmlViewerTarget? = null,
     val statusMessage: String? = null,
     val errorMessage: String? = null
 )
@@ -3269,6 +3274,267 @@ class StudioViewModel(
         _uiState.update { it.copy(htmlBatchBundle = null) }
     }
 
+    fun openHtmlLinkHub() {
+        _uiState.update { it.copy(showHtmlLinkHub = true) }
+    }
+
+    fun closeHtmlLinkHub() {
+        _uiState.update { it.copy(showHtmlLinkHub = false) }
+    }
+
+    fun setHtmlLinkFilter(filter: HtmlLinkFilter) {
+        _uiState.update { it.copy(htmlLinkFilter = filter) }
+    }
+
+    fun openHtmlHubViewer() {
+        _uiState.update { it.copy(activeHtmlViewerTarget = HtmlViewerTarget.HubIndex) }
+    }
+
+    fun openHtmlArticleViewer(
+        postId: String,
+        channel: ChannelPlatform = _uiState.value.selectedChannel
+    ) {
+        _uiState.update {
+            it.copy(activeHtmlViewerTarget = HtmlViewerTarget.ArticleDetail(postId = postId, channel = channel))
+        }
+    }
+
+    fun closeHtmlViewer() {
+        _uiState.update { it.copy(activeHtmlViewerTarget = null) }
+    }
+
+    fun requestOpenPreviewModal(postId: String, tabIndex: Int = 0) {
+        _uiState.update { cur ->
+            cur.copy(
+                selectedSlotId = postId,
+                pendingAutoPreviewSlotId = postId,
+                pendingAutoPreviewTab = tabIndex.coerceIn(0, 3),
+                pendingAutoPreviewNonce = cur.pendingAutoPreviewNonce + 1L
+            )
+        }
+    }
+
+    fun verifySlotBeforeRegistration(postId: String) {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == postId }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+            ?: return
+        viewModelScope.launch {
+            val corpus = repository.getRecent7DayCorpus()
+            val auditedQa = QaVerificationEngine.auditSlot(
+                auctionCase = targetSlot.auctionCase,
+                variants = targetSlot.variants,
+                scheduledTimes = targetSlot.scheduledTimes,
+                config = state.config,
+                recent7DayCorpus = corpus
+            )
+            val auditedSlot = targetSlot.copy(qaReport = auditedQa)
+            val reg = RegistryInfographicEngine.buildTemplate(auditedSlot.auctionCase, state.selectedRegistryTemplateType)
+            val eval = Article30PointEvaluator.evaluate(auditedSlot, state.config, state.proFunnel, reg, corpus)
+            val legal = LegalDoctrineVerifier.verify(auditedSlot.auctionCase)
+            val variant = auditedSlot.variants[state.selectedChannel] ?: auditedSlot.variants.values.firstOrNull()
+            val defense = if (variant != null) {
+                QualityDefenseEngine.defendText(
+                    rawTitle = variant.title,
+                    rawBody = variant.bodyText,
+                    channel = variant.platform,
+                    auction = auditedSlot.auctionCase,
+                    naverSearchKeyword = state.proFunnel.naverSearchKeyword
+                )
+            } else null
+            val legalLabel = if (legal.overallPassed) "통과" else "주의 ${legal.criticalBlockCount + legal.cautionCount}건"
+
+            _uiState.update { cur ->
+                cur.copy(
+                    slots = cur.slots.map { if (it.postId == auditedSlot.postId) auditedSlot else it },
+                    legalVerificationByCaseId = cur.legalVerificationByCaseId + (auditedSlot.auctionCase.caseId to legal),
+                    qualityDefenseState = if (defense != null) {
+                        cur.qualityDefenseState.copy(
+                            lastAuditedCaseId = auditedSlot.auctionCase.caseId,
+                            lastChannel = variant?.platform ?: cur.selectedChannel,
+                            lastResult = defense,
+                            lastUpdatedAt = currentTimestamp()
+                        )
+                    } else cur.qualityDefenseState,
+                    statusMessage = "${auditedSlot.auctionCase.caseId} 검증 완료: ${eval.totalScore}/100점 (${eval.passedCount}/30 통과 · 법리 $legalLabel)"
+                )
+            }
+        }
+    }
+
+    fun autoFixSlotForPreview(postId: String) {
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == postId }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+            ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, statusMessage = null, errorMessage = null) }
+            try {
+                val corpus = repository.getRecent7DayCorpus()
+                val fixed = WeeklyBatchScheduleEngine.ensureScoreAtLeast95(
+                    slot = targetSlot,
+                    config = state.config,
+                    proFunnel = state.proFunnel,
+                    recent7DayCorpus = corpus,
+                    maxIterations = 3
+                )
+                val auditedQa = QaVerificationEngine.auditSlot(
+                    auctionCase = fixed.slot.auctionCase,
+                    variants = fixed.slot.variants,
+                    scheduledTimes = fixed.slot.scheduledTimes,
+                    config = state.config,
+                    recent7DayCorpus = corpus
+                )
+                val updatedSlot = fixed.slot.copy(qaReport = auditedQa)
+                val reg = RegistryInfographicEngine.buildTemplate(updatedSlot.auctionCase, state.selectedRegistryTemplateType)
+                val eval = Article30PointEvaluator.evaluate(updatedSlot, state.config, state.proFunnel, reg, corpus)
+                val legal = LegalDoctrineVerifier.verify(updatedSlot.auctionCase)
+                val now = currentTimestamp()
+                val existingWh = state.warehouseArticles.firstOrNull { it.slot.postId == updatedSlot.postId }
+                val whId = existingWh?.warehouseId ?: "wh-${updatedSlot.auctionCase.dedupKey}"
+                val whArticle = WarehouseArticle(
+                    warehouseId = whId,
+                    slot = updatedSlot,
+                    evaluation = eval,
+                    registryInfographic = reg,
+                    warehouseStatus = when {
+                        updatedSlot.status == PostStatus.PUBLISHED && eval.eligibleForRegistration -> WarehouseArticleStatus.REGISTERED
+                        eval.eligibleForRegistration -> WarehouseArticleStatus.STORED_READY
+                        else -> WarehouseArticleStatus.NEEDS_IMPROVEMENT
+                    },
+                    createdAt = existingWh?.createdAt ?: now,
+                    registeredAt = existingWh?.registeredAt,
+                    registeredChannels = existingWh?.registeredChannels ?: emptyList()
+                )
+                val log = WritingActivityLog(
+                    logId = "wlog-fix-${System.currentTimeMillis()}",
+                    warehouseId = whId,
+                    caseId = updatedSlot.auctionCase.caseId,
+                    actionTitle = "검증 후 자동 보완 수정 (${eval.totalScore}점)",
+                    score = eval.totalScore,
+                    passedGate95 = eval.eligibleForRegistration,
+                    detail = "${eval.passedCount}/30 항목 통과 · 미리보기 재확인 대기",
+                    timestamp = now
+                )
+                val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+                _uiState.update { cur ->
+                    val nextSlots = if (cur.slots.any { it.postId == updatedSlot.postId }) {
+                        cur.slots.map { if (it.postId == updatedSlot.postId) updatedSlot else it }
+                    } else {
+                        listOf(updatedSlot) + cur.slots
+                    }
+                    cur.copy(
+                        isBusy = false,
+                        slots = nextSlots,
+                        selectedSlotId = updatedSlot.postId,
+                        warehouseArticles = snapshot?.articles ?: cur.warehouseArticles,
+                        writingLogs = snapshot?.writingLogs ?: (listOf(log) + cur.writingLogs),
+                        legalVerificationByCaseId = cur.legalVerificationByCaseId + (updatedSlot.auctionCase.caseId to legal),
+                        statusMessage = "${updatedSlot.auctionCase.caseId} 자동 보완 수정 완료 (${eval.totalScore}점) · 미리보기 확인 후 등록 버튼을 눌러 주세요."
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, errorMessage = "자동 보완 수정 오류: ${e.localizedMessage}") }
+            }
+        }
+    }
+
+    fun updateSlotVariantContent(
+        postId: String,
+        platform: ChannelPlatform,
+        editedTitle: String,
+        editedBodyText: String,
+        editedPinnedComment: String
+    ) {
+        val cleanTitle = editedTitle.trim()
+        val cleanBody = editedBodyText.trim()
+        if (cleanTitle.isBlank() || cleanBody.isBlank()) {
+            _uiState.update { it.copy(errorMessage = "수정할 제목과 본문을 모두 입력해 주세요.") }
+            return
+        }
+        val state = _uiState.value
+        val targetSlot = state.slots.firstOrNull { it.postId == postId }
+            ?: state.warehouseArticles.firstOrNull { it.slot.postId == postId }?.slot
+            ?: return
+        val existingVariant = targetSlot.variants[platform]
+            ?: targetSlot.variants.values.firstOrNull()
+            ?: return
+
+        viewModelScope.launch {
+            val sanitizedTitle = PrivacySanitizerEngine.sanitizeForPublicBlog(cleanTitle)
+            val sanitizedBody = PrivacySanitizerEngine.sanitizeForPublicBlog(cleanBody)
+            val sanitizedPinned = PrivacySanitizerEngine.sanitizeForPublicBlog(editedPinnedComment.trim())
+
+            val updatedVariant = existingVariant.copy(
+                platform = platform,
+                title = sanitizedTitle,
+                bodyText = sanitizedBody,
+                pinnedCommentSnippet = sanitizedPinned
+            )
+            val updatedVariants = targetSlot.variants.toMutableMap().apply {
+                put(platform, updatedVariant)
+            }
+            val draftUpdatedSlot = targetSlot.copy(variants = updatedVariants)
+            val corpus = repository.getRecent7DayCorpus()
+            val auditedQa = QaVerificationEngine.auditSlot(
+                auctionCase = draftUpdatedSlot.auctionCase,
+                variants = draftUpdatedSlot.variants,
+                scheduledTimes = draftUpdatedSlot.scheduledTimes,
+                config = state.config,
+                recent7DayCorpus = corpus
+            )
+            val finalSlot = draftUpdatedSlot.copy(qaReport = auditedQa)
+            val reg = RegistryInfographicEngine.buildTemplate(finalSlot.auctionCase, state.selectedRegistryTemplateType)
+            val eval = Article30PointEvaluator.evaluate(finalSlot, state.config, state.proFunnel, reg, corpus)
+            val legal = LegalDoctrineVerifier.verify(finalSlot.auctionCase)
+            val now = currentTimestamp()
+            val existingWh = state.warehouseArticles.firstOrNull { it.slot.postId == finalSlot.postId }
+            val whId = existingWh?.warehouseId ?: "wh-${finalSlot.auctionCase.dedupKey}"
+            val whArticle = WarehouseArticle(
+                warehouseId = whId,
+                slot = finalSlot,
+                evaluation = eval,
+                registryInfographic = reg,
+                warehouseStatus = when {
+                    finalSlot.status == PostStatus.PUBLISHED && eval.eligibleForRegistration -> WarehouseArticleStatus.REGISTERED
+                    eval.eligibleForRegistration -> WarehouseArticleStatus.STORED_READY
+                    else -> WarehouseArticleStatus.NEEDS_IMPROVEMENT
+                },
+                createdAt = existingWh?.createdAt ?: now,
+                registeredAt = existingWh?.registeredAt,
+                registeredChannels = existingWh?.registeredChannels ?: emptyList()
+            )
+            val log = WritingActivityLog(
+                logId = "wlog-edit-${System.currentTimeMillis()}",
+                warehouseId = whId,
+                caseId = finalSlot.auctionCase.caseId,
+                actionTitle = "${platform.displayName} 원고 직접 수정·재검증 (${eval.totalScore}점)",
+                score = eval.totalScore,
+                passedGate95 = eval.eligibleForRegistration,
+                detail = "${eval.passedCount}/30 항목 통과 · 제목 '${sanitizedTitle.take(28)}'",
+                timestamp = now
+            )
+            val snapshot = repository.upsertWarehouseArticle(whArticle, log)
+            _uiState.update { cur ->
+                val nextSlots = if (cur.slots.any { it.postId == finalSlot.postId }) {
+                    cur.slots.map { if (it.postId == finalSlot.postId) finalSlot else it }
+                } else {
+                    listOf(finalSlot) + cur.slots
+                }
+                cur.copy(
+                    slots = nextSlots,
+                    selectedSlotId = finalSlot.postId,
+                    warehouseArticles = snapshot?.articles ?: cur.warehouseArticles,
+                    writingLogs = snapshot?.writingLogs ?: (listOf(log) + cur.writingLogs),
+                    legalVerificationByCaseId = cur.legalVerificationByCaseId + (finalSlot.auctionCase.caseId to legal),
+                    statusMessage = "${finalSlot.auctionCase.caseId} (${platform.displayName}) 수정 저장 및 재검증 완료 (${eval.totalScore}점)"
+                )
+            }
+        }
+    }
+
     /**
      * .env (BuildConfig.NAVER_CLIENT_ID / NAVER_CLIENT_SECRET)에 설정된
      * 네이버 검색 API 키를 사용하여 특정 경매 키워드의 블로그 상위 노출 가능성을 진단한다.
@@ -4066,7 +4332,7 @@ class StudioViewModel(
         }
     }
 
-    fun generatePostFromDiscoveredDbItem(recordId: String) {
+    fun generatePostFromDiscoveredDbItem(recordId: String, openPreviewAfter: Boolean = true) {
         val state = _uiState.value
         val item = state.todakAdmin.discoveredItems.firstOrNull {
             it.recordId == recordId || it.dedupKey == recordId || it.caseId == recordId
@@ -4149,7 +4415,10 @@ class StudioViewModel(
                             summaryMessage = "${enrichedSlot.auctionCase.caseId} DB 기준 ${whArticle.evaluation.totalScore}점 3채널 글 생성 완료" +
                                 if (d1Res?.isSuccess == true) " (D1 반영)" else ""
                         ),
-                        statusMessage = "${enrichedSlot.auctionCase.caseId} DB 기반 95+ 3채널 글 생성 및 창고 저장 완료 (${whArticle.evaluation.totalScore}점)"
+                        pendingAutoPreviewSlotId = if (openPreviewAfter) enrichedSlot.postId else cur.pendingAutoPreviewSlotId,
+                        pendingAutoPreviewTab = if (openPreviewAfter) 0 else cur.pendingAutoPreviewTab,
+                        pendingAutoPreviewNonce = if (openPreviewAfter) cur.pendingAutoPreviewNonce + 1L else cur.pendingAutoPreviewNonce,
+                        statusMessage = "${enrichedSlot.auctionCase.caseId} DB 기반 95+ 3채널 글 생성 완료 (${whArticle.evaluation.totalScore}점) · 미리보기·검증 후 등록 가능"
                     )
                 }
             } catch (e: CancellationException) {

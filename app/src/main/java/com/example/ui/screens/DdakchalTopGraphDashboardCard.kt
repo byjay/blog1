@@ -260,13 +260,13 @@ fun DdakchalTopGraphDashboardCard(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "딱찰 실시간 현황 그래프",
+                            text = "딱찰 컨트롤타워 · 실시간 관제 그래프",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary
                         )
                         Text(
-                            text = "수집 DB · 블로그 글 수 · 방문자를 한눈에 봅니다",
+                            text = "수집 DB · 3채널 블로그 발행 · 방문자를 한눈에 관제합니다",
                             style = MaterialTheme.typography.labelSmall,
                             color = TextSecondary,
                             maxLines = 1,

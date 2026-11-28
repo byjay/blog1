@@ -91,10 +91,10 @@ fun DdakchalTopStatusBar(
         else -> TistoryAmber
     }
     val statusLabel = when {
-        telemetry.isPinging -> "동기화중"
-        telemetry.ddakchalConnected -> "딱찰 연결"
-        hasError -> "연결점검"
-        else -> "대기중"
+        telemetry.isPinging -> "컨트롤타워 동기화"
+        telemetry.ddakchalConnected -> "컨트롤타워 · 연결됨"
+        hasError -> "컨트롤타워 · 점검"
+        else -> "컨트롤타워 · 대기"
     }
     val latencyText = telemetry.apiLatencyMs?.let { "${it}ms" } ?: "--ms"
     val latencyColor = when (val ms = telemetry.apiLatencyMs) {

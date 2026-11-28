@@ -62,6 +62,8 @@ import com.example.ui.screens.ChannelQaScreen
 import com.example.ui.screens.CloudflareServerScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DdakchalTopStatusBar
+import com.example.ui.screens.HtmlLinkHubSheetModal
+import com.example.ui.screens.InteractiveHtmlLinkViewerModal
 import com.example.ui.screens.TemplatesAndRulesScreen
 import com.example.ui.screens.WarehouseAndVisitorDashboardScreen
 import com.example.ui.theme.DdakchalStudioTheme
@@ -286,6 +288,12 @@ fun DdakchalStudioApp() {
                                 onCaseLookupInputChange = viewModel::setTodakCaseLookupInput,
                                 onLookupCaseAndAutoPreview = viewModel::lookupCaseNumberFromTodakAndAutoPreview,
                                 onConsumeAutoPreview = viewModel::consumePendingAutoPreview,
+                                onOpenHtmlLinkHub = viewModel::openHtmlLinkHub,
+                                onOpenHtmlHubViewer = viewModel::openHtmlHubViewer,
+                                onOpenHtmlArticleViewer = viewModel::openHtmlArticleViewer,
+                                onVerifySlot = viewModel::verifySlotBeforeRegistration,
+                                onAutoFixSlotForPreview = viewModel::autoFixSlotForPreview,
+                                onSaveManualEdit = viewModel::updateSlotVariantContent,
                                 onOpenQaTab = { activeTab = StudioTab.QA_INSPECT },
                                 onRunAiEvalSelected = { viewModel.evaluateSlotWithAi30Criteria() },
                                 onTestBusanProfitableLand = viewModel::createAndEvaluateBusanProfitableLandTest,
@@ -407,5 +415,36 @@ fun DdakchalStudioApp() {
                 }
             }
         }
+    }
+
+    if (uiState.showHtmlLinkHub) {
+        HtmlLinkHubSheetModal(
+            uiState = uiState,
+            onSelectFilter = viewModel::setHtmlLinkFilter,
+            onOpenHubViewer = viewModel::openHtmlHubViewer,
+            onOpenArticleViewer = viewModel::openHtmlArticleViewer,
+            onOpenVerifyAndEdit = { postId ->
+                viewModel.closeHtmlLinkHub()
+                activeTab = StudioTab.DASHBOARD
+                viewModel.requestOpenPreviewModal(postId, tabIndex = 1)
+            },
+            onAutoFixAndRegister = viewModel::autoFixAndRegisterSlot,
+            onDismiss = viewModel::closeHtmlLinkHub
+        )
+    }
+
+    val htmlViewerTarget = uiState.activeHtmlViewerTarget
+    if (htmlViewerTarget != null) {
+        InteractiveHtmlLinkViewerModal(
+            initialTarget = htmlViewerTarget,
+            uiState = uiState,
+            onOpenVerifyAndEdit = { postId ->
+                viewModel.closeHtmlViewer()
+                viewModel.closeHtmlLinkHub()
+                activeTab = StudioTab.DASHBOARD
+                viewModel.requestOpenPreviewModal(postId, tabIndex = 1)
+            },
+            onClose = viewModel::closeHtmlViewer
+        )
     }
 }

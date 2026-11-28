@@ -34,8 +34,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.Button
@@ -118,12 +120,20 @@ fun ArticleQualityPreviewModal(
     onPublishSelectedChannelsAndVerify: (String, String) -> Unit,
     onPublishNaverDirectAndVerify: (String, String) -> Unit,
     onOpenSettings: () -> Unit,
-    onRefreshCourtEvidence: (caseId: String) -> Unit = {}
+    onRefreshCourtEvidence: (caseId: String) -> Unit = {},
+    onVerifySlot: (String) -> Unit = {},
+    onSaveManualEdit: (
+        postId: String,
+        platform: ChannelPlatform,
+        title: String,
+        bodyText: String,
+        pinnedComment: String
+    ) -> Unit = { _, _, _, _, _ -> },
+    onOpenHtmlArticleViewer: (postId: String, channel: ChannelPlatform) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var modalTab by remember(slot.postId, initialTabIndex) { mutableIntStateOf(initialTabIndex.coerceIn(0, 3)) }
-    var showOnlyFailed by remember { mutableStateOf(false) }
 
     val selectedChannel = uiState.selectedChannel
     val activeVariant = slot.variants[selectedChannel]
@@ -189,7 +199,7 @@ fun ArticleQualityPreviewModal(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "${slot.auctionCase.caseId} · 글 품질 · 실제 미리보기 · 테스트 등록",
+                            text = "${slot.auctionCase.caseId} · 미리보기 · 검증·수정 · 등록",
                             style = MaterialTheme.typography.titleSmall,
                             color = TextPrimary,
                             maxLines = 1,
@@ -213,13 +223,13 @@ fun ArticleQualityPreviewModal(
                     }
                 }
 
-                // 4 Sub-tabs
+                // 4 Workflow Step Tabs: 미리보기 -> 검증·수정 -> 사진·등기 -> 등록
                 TabRow(
                     selectedTabIndex = modalTab,
                     containerColor = NavyBackground,
                     contentColor = EmeraldPrimary
                 ) {
-                    listOf("글 미리보기", "품질 ${evalResult.totalScore}점", "사진·등기·방문", "1건 테스트등록").forEachIndexed { idx, label ->
+                    listOf("미리보기", "검증·수정(${evalResult.totalScore})", "사진·등기", "등록").forEachIndexed { idx, label ->
                         Tab(
                             selected = modalTab == idx,
                             onClick = { modalTab = idx },
@@ -290,8 +300,21 @@ fun ArticleQualityPreviewModal(
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onOpenHtmlArticleViewer(slot.postId, activeVariant.platform)
+                                    },
+                                    modifier = Modifier
+                                        .weight(0.95f)
+                                        .height(48.dp)
+                                        .testTag("btn_modal_open_html_viewer")
+                                ) {
+                                    Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("HTML링크", maxLines = 1)
+                                }
                                 OutlinedButton(
                                     onClick = {
                                         SafeClipboardHelper.copyPlainTextSafely(
@@ -302,165 +325,57 @@ fun ArticleQualityPreviewModal(
                                         )
                                     },
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .weight(0.9f)
                                         .height(48.dp)
                                         .testTag("btn_modal_copy_html")
                                 ) {
-                                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("완성 HTML 복사", maxLines = 1)
+                                    Icon(Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("복사", maxLines = 1)
+                                }
+                                OutlinedButton(
+                                    onClick = { modalTab = 1 },
+                                    modifier = Modifier
+                                        .weight(1.05f)
+                                        .height(48.dp)
+                                        .testTag("btn_modal_go_verify_edit"),
+                                    border = BorderStroke(1.dp, CloudflareSky.copy(alpha = 0.75f))
+                                ) {
+                                    Icon(Icons.Filled.Edit, contentDescription = null, tint = CloudflareSky, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("검증·수정", color = CloudflareSky, maxLines = 1)
                                 }
                                 Button(
                                     onClick = { modalTab = 3 },
                                     modifier = Modifier
-                                        .weight(1f)
+                                        .weight(0.9f)
                                         .height(48.dp)
                                         .testTag("btn_modal_go_publish"),
                                     colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
                                 ) {
-                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("1건 테스트 등록 →", fontWeight = FontWeight.Bold, maxLines = 1)
+                                    Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("등록 →", fontWeight = FontWeight.Bold, maxLines = 1)
                                 }
                             }
                         }
                     }
 
-                    // Tab 1: 30-Point Quality Breakdown + Court Case Basics Gate
+                    // Tab 1: Verify & Manual/Auto Edit
                     1 -> {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            EasyMenuGuideStrip(
-                                icon = Icons.Filled.Verified,
-                                easyGuide = "30가지 검색·신뢰 기준을 자동 채점합니다. 95점 미만이면 '자동 품질 보완' 버튼 한 번으로 바로 끌어올립니다.",
-                                accentColor = EmeraldPrimary
-                            )
-                            Surface(
-                                color = if (evalResult.eligibleForRegistration) EmeraldContainer else AmberContainer,
-                                shape = MaterialTheme.shapes.medium,
-                                border = BorderStroke(
-                                    1.dp,
-                                    if (evalResult.eligibleForRegistration) EmeraldPrimary else TistoryAmber
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = if (evalResult.eligibleForRegistration) "자동 등록 합격선(95+) 통과" else "품질 보완 권장 (목표 95점+)",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = TextPrimary
-                                        )
-                                        Text(
-                                            text = "${evalResult.totalScore}/100점",
-                                            style = MaterialTheme.typography.titleMedium.copy(fontFamily = JetBrainsMonoFamily),
-                                            color = if (evalResult.eligibleForRegistration) MintSecondary else TistoryAmber,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                    LinearProgressIndicator(
-                                        progress = { (evalResult.totalScore / 100f).coerceIn(0f, 1f) },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(8.dp)
-                                            .clip(RoundedCornerShape(4.dp)),
-                                        color = if (evalResult.eligibleForRegistration) EmeraldPrimary else TistoryAmber,
-                                        trackColor = NavyContainerHighest
-                                    )
-                                    Text(
-                                        text = "통과 ${evalResult.passedCount}/${evalResult.totalCriteriaCount}개 · 기본증빙(사진 ${courtArchive.photos.size}컷 · 등기 ${courtArchive.registryGapGu.size + courtArchive.registryEulGu.size}건 · 방문기록 ${courtArchive.visitRecords.size}건) HTML 자동 포함",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary
-                                    )
-                                }
-                            }
-
-                            // 5 Pillar Breakdown
-                            EvaluationPillar.entries.forEach { pillar ->
-                                val pillarItems = evalResult.items.filter { it.pillar == pillar }
-                                val earned = pillarItems.sumOf { it.earnedPoints }
-                                val maxPts = pillarItems.sumOf { it.maxPoints }.coerceAtLeast(1)
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("${pillar.label} (만점 ${maxPts}점)", style = MaterialTheme.typography.labelLarge, color = TextPrimary)
-                                    Text("$earned / $maxPts", style = MaterialTheme.typography.labelMedium.copy(fontFamily = JetBrainsMonoFamily), color = MintSecondary)
-                                }
-                                LinearProgressIndicator(
-                                    progress = { (earned.toFloat() / maxPts.toFloat()).coerceIn(0f, 1f) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(6.dp)
-                                        .clip(RoundedCornerShape(4.dp)),
-                                    color = CloudflareSky,
-                                    trackColor = NavyContainerHighest
-                                )
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                FilterChip(
-                                    selected = !showOnlyFailed,
-                                    onClick = { showOnlyFailed = false },
-                                    label = { Text("전체 30항목") }
-                                )
-                                FilterChip(
-                                    selected = showOnlyFailed,
-                                    onClick = { showOnlyFailed = true },
-                                    label = { Text("미충족 항목만 (${evalResult.items.count { !it.passed }})") }
-                                )
-                            }
-
-                            if (!evalResult.eligibleForRegistration) {
-                                Button(
-                                    onClick = { onAutoFixSlot(slot.postId) },
-                                    enabled = !uiState.isBusy,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp)
-                                        .testTag("btn_modal_autofix_95"),
-                                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
-                                ) {
-                                    Icon(Icons.Filled.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("95점+ 자동 품질 보완 실행", fontWeight = FontWeight.Bold)
-                                }
-                            }
-
-                            val shownItems = if (showOnlyFailed) evalResult.items.filter { !it.passed } else evalResult.items
-                            shownItems.forEach { item ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 3.dp),
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Icon(
-                                        imageVector = if (item.passed) Icons.Filled.CheckCircle else Icons.Filled.ErrorOutline,
-                                        contentDescription = null,
-                                        tint = if (item.passed) EmeraldPrimary else CrimsonAlert,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text("${item.orderIndex}. ${item.title} (${item.earnedPoints}/${item.maxPoints}점)", style = MaterialTheme.typography.bodySmall, color = TextPrimary, fontWeight = FontWeight.Medium)
-                                        Text(item.detail, style = MaterialTheme.typography.labelSmall, color = if (item.passed) TextMuted else CrimsonAlert)
-                                    }
-                                }
-                            }
-                        }
+                        ArticleVerifyAndEditTab(
+                            slot = slot,
+                            uiState = uiState,
+                            evalResult = evalResult,
+                            courtArchive = courtArchive,
+                            legalReport = uiState.legalVerificationByCaseId[slot.auctionCase.caseId],
+                            onSelectChannel = onSelectChannel,
+                            onRunVerify = onVerifySlot,
+                            onAutoFixWithoutPublish = onAutoFixSlot,
+                            onSaveManualEdit = onSaveManualEdit,
+                            onGoToPreviewTab = { modalTab = 0 },
+                            onGoToRegisterTab = { modalTab = 3 }
+                        )
                     }
 
                     // Tab 2: Photos + Registry Extract + Visit Records (Court Case Basics)
@@ -556,37 +471,54 @@ fun ArticleQualityPreviewModal(
                                             backgroundColor = EmeraldContainer
                                         )
                                     }
-                                    Text(
-                                        text = "주의: 가짜 성공을 반환하지 않습니다. 실제 Worker/D1 또는 릴레이가 연결되지 않은 채널은 HTTP 상태와 함께 미연결 사유가 정직하게 표기됩니다.",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = TextSecondary
-                                    )
-                                    OutlinedButton(
-                                        onClick = {
-                                            onDismiss()
-                                            onOpenSettings()
-                                        },
-                                        modifier = Modifier.height(48.dp)
-                                    ) {
-                                        Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("블로그 계정 · Worker · API 설정 열기")
+                                        Text(
+                                            text = "현재 품질 ${evalResult.totalScore}점(${evalResult.passedCount}/30) · 등록 버튼을 누르면 실제 채널 API로 전송 후 HTTP 응답과 라이브 URL을 실검증합니다.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            OutlinedButton(
+                                                onClick = { modalTab = 1 },
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .height(48.dp)
+                                            ) {
+                                                Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("검증·수정", maxLines = 1)
+                                            }
+                                            OutlinedButton(
+                                                onClick = {
+                                                    onDismiss()
+                                                    onOpenSettings()
+                                                },
+                                                modifier = Modifier
+                                                    .weight(1.2f)
+                                                    .height(48.dp)
+                                            ) {
+                                                Icon(Icons.Filled.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Text("블로그·Worker 설정", maxLines = 1)
+                                            }
+                                        }
                                     }
                                 }
-                            }
 
                             Button(
                                 onClick = { onPublishSelectedChannelsAndVerify(slot.postId, "") },
                                 enabled = !uiState.isBusy,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(50.dp)
+                                    .height(52.dp)
                                     .testTag("btn_modal_test_publish_all"),
                                 colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
                             ) {
                                 Icon(Icons.Filled.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("선택 채널 1건 테스트 등록 · 실검증 실행", fontWeight = FontWeight.Bold)
+                                Text("블로그 등록 실행 (선택 채널 · 실검증)", fontWeight = FontWeight.Bold)
                             }
 
                             Row(
@@ -608,35 +540,49 @@ fun ArticleQualityPreviewModal(
                                 }
                                 OutlinedButton(
                                     onClick = {
-                                        val fullCopy = buildString {
-                                            appendLine(naverVariant?.title.orEmpty())
-                                            appendLine()
-                                            appendLine(naverVariant?.bodyText.orEmpty())
-                                            val pinned = naverVariant?.pinnedCommentSnippet
-                                            if (!pinned.isNullOrBlank()) {
-                                                appendLine()
-                                                appendLine("[고정댓글] $pinned")
-                                            }
-                                        }
-                                        SafeClipboardHelper.copyPlainTextSafely(
-                                            context = context,
-                                            label = "네이버 원고 + 고정댓글",
-                                            text = fullCopy,
-                                            composeClipboard = clipboard
-                                        )
-                                        runCatching {
-                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(writeAssistUrl)))
-                                        }
+                                        onOpenHtmlArticleViewer(slot.postId, activeVariant.platform)
                                     },
                                     modifier = Modifier
                                         .weight(1f)
                                         .height(48.dp)
-                                        .testTag("btn_modal_open_naver_write")
+                                        .testTag("btn_modal_register_open_html_link")
                                 ) {
-                                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Filled.Link, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("원고복사+글쓰기창", maxLines = 1)
+                                    Text("HTML 링크 보기", maxLines = 1)
                                 }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    val fullCopy = buildString {
+                                        appendLine(naverVariant?.title.orEmpty())
+                                        appendLine()
+                                        appendLine(naverVariant?.bodyText.orEmpty())
+                                        val pinned = naverVariant?.pinnedCommentSnippet
+                                        if (!pinned.isNullOrBlank()) {
+                                            appendLine()
+                                            appendLine("[고정댓글] $pinned")
+                                        }
+                                    }
+                                    SafeClipboardHelper.copyPlainTextSafely(
+                                        context = context,
+                                        label = "네이버 원고 + 고정댓글",
+                                        text = fullCopy,
+                                        composeClipboard = clipboard
+                                    )
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(writeAssistUrl)))
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(48.dp)
+                                    .testTag("btn_modal_open_naver_write")
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("네이버 원고복사 + 글쓰기창", maxLines = 1)
                             }
 
                             val report = uiState.publishVerificationReport
@@ -675,6 +621,16 @@ fun ArticleQualityPreviewModal(
                                                 )
                                             }
                                             Text(outcome.message, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                                            if (outcome.publishedPostUrl.startsWith("http")) {
+                                                OutlinedButton(
+                                                    onClick = { SafeClipboardHelper.openExternalWebUrl(context, outcome.publishedPostUrl) },
+                                                    modifier = Modifier.height(48.dp)
+                                                ) {
+                                                    Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("발행된 글 열기 ↗", maxLines = 1)
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -687,7 +643,7 @@ fun ArticleQualityPreviewModal(
     }
 }
 
-private fun buildLocalPhotoDataUriMap(
+internal fun buildLocalPhotoDataUriMap(
     context: Context,
     urls: List<String>
 ): Map<Int, String> {

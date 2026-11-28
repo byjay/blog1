@@ -886,6 +886,41 @@ data class HtmlBatchBundleState(
     val generatedAt: String
 )
 
+enum class HtmlLinkFilter(val label: String) {
+    ALL("전체"),
+    WEB_PUBLISHED("웹URL 발행됨"),
+    LOCAL_ONLY("대기·초안")
+}
+
+data class LinkedHtmlArticleEntry(
+    val postId: String,
+    val caseId: String,
+    val dedupKey: String,
+    val title: String,
+    val courtName: String,
+    val address: String,
+    val propertyTypeLabel: String,
+    val status: PostStatus,
+    val publishDate: String,
+    val score: Int,
+    val defaultChannel: ChannelPlatform,
+    val publishedUrls: Map<ChannelPlatform, String>,
+    val cloudflareExpectedUrl: String,
+    val inAppHubTargetUri: String,
+    val relativeHtmlFilename: String,
+    val photoCount: Int,
+    val registryCount: Int,
+    val visitCount: Int
+)
+
+sealed interface HtmlViewerTarget {
+    data object HubIndex : HtmlViewerTarget
+    data class ArticleDetail(
+        val postId: String,
+        val channel: ChannelPlatform
+    ) : HtmlViewerTarget
+}
+
 // ==================== Naver Search API Keyword Blog Exposure Diagnostic Models ====================
 
 enum class ExposurePotentialGrade(val label: String) {

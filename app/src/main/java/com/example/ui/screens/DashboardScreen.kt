@@ -177,6 +177,12 @@ fun DashboardScreen(
     onCaseLookupInputChange: (String) -> Unit = {},
     onLookupCaseAndAutoPreview: (caseInput: String, preferredTab: Int) -> Unit = { _, _ -> },
     onConsumeAutoPreview: () -> Unit = {},
+    onOpenHtmlLinkHub: () -> Unit = {},
+    onOpenHtmlHubViewer: () -> Unit = {},
+    onOpenHtmlArticleViewer: (String, ChannelPlatform) -> Unit = { _, _ -> },
+    onVerifySlot: (String) -> Unit = {},
+    onAutoFixSlotForPreview: (String) -> Unit = onAutoFixAndRegisterSlot,
+    onSaveManualEdit: (String, ChannelPlatform, String, String, String) -> Unit = { _, _, _, _, _ -> },
     onOpenQaTab: () -> Unit = {},
     onRunAiEvalSelected: () -> Unit,
     onTestBusanProfitableLand: () -> Unit,
@@ -254,7 +260,9 @@ fun DashboardScreen(
                 onNavigateTemplates = onOpenTemplates,
                 onNavigateServer = onOpenSettings,
                 onCaseLookupInputChange = onCaseLookupInputChange,
-                onLookupCaseAndAutoPreview = onLookupCaseAndAutoPreview
+                onLookupCaseAndAutoPreview = onLookupCaseAndAutoPreview,
+                onOpenHtmlLinkHub = onOpenHtmlLinkHub,
+                onOpenHtmlHubViewer = onOpenHtmlHubViewer
             )
         }
 
@@ -941,29 +949,29 @@ fun DashboardScreen(
                                 previewModalSlotId = selectedSlot.postId
                             },
                             modifier = Modifier
-                                .weight(1.1f)
+                                .weight(1.05f)
                                 .height(48.dp)
                                 .testTag("btn_open_first_article_preview"),
                             colors = ButtonDefaults.buttonColors(containerColor = CloudflareSky, contentColor = NavyBackground)
                         ) {
                             Icon(Icons.Filled.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("글 미리보기", fontWeight = FontWeight.Bold, maxLines = 1)
+                            Text("미리보기", fontWeight = FontWeight.Bold, maxLines = 1)
                         }
                         OutlinedButton(
                             onClick = {
-                                previewModalInitialTab = 2
+                                previewModalInitialTab = 1
                                 previewModalSlotId = selectedSlot.postId
                             },
                             modifier = Modifier
-                                .weight(1.1f)
+                                .weight(1.05f)
                                 .height(48.dp)
                                 .testTag("btn_open_court_basics_modal"),
                             border = BorderStroke(1.dp, MintSecondary.copy(alpha = 0.7f))
                         ) {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
+                            Icon(Icons.Filled.Tune, contentDescription = null, tint = MintSecondary, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("사진·등기·방문", color = MintSecondary, maxLines = 1)
+                            Text("검증·수정", color = MintSecondary, maxLines = 1)
                         }
                         Button(
                             onClick = {
@@ -971,14 +979,14 @@ fun DashboardScreen(
                                 previewModalSlotId = selectedSlot.postId
                             },
                             modifier = Modifier
-                                .weight(1f)
+                                .weight(0.95f)
                                 .height(48.dp)
                                 .testTag("btn_open_first_test_publish"),
                             colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary, contentColor = NavyBackground)
                         ) {
                             Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("테스트 등록", fontWeight = FontWeight.Bold, maxLines = 1)
+                            Text("등록", fontWeight = FontWeight.Bold, maxLines = 1)
                         }
                     }
                 }
@@ -1132,11 +1140,14 @@ fun DashboardScreen(
             onSelectChannel = onSelectChannel,
             onAttachCourtPhoto = onAttachCourtPhoto,
             onAddVisitRecord = onAddVisitRecord,
-            onAutoFixSlot = onAutoFixAndRegisterSlot,
+            onAutoFixSlot = onAutoFixSlotForPreview,
             onPublishSelectedChannelsAndVerify = onPublishSelectedChannelsAndVerify,
             onPublishNaverDirectAndVerify = onPublishNaverDirectAndVerify,
             onOpenSettings = onOpenSettings,
-            onRefreshCourtEvidence = { caseId -> onLookupCaseAndAutoPreview(caseId, 2) }
+            onRefreshCourtEvidence = { caseId -> onLookupCaseAndAutoPreview(caseId, 2) },
+            onVerifySlot = onVerifySlot,
+            onSaveManualEdit = onSaveManualEdit,
+            onOpenHtmlArticleViewer = onOpenHtmlArticleViewer
         )
     }
 }

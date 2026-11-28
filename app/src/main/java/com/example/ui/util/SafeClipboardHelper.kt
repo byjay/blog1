@@ -125,6 +125,68 @@ object SafeClipboardHelper {
         }
     }
 
+    fun openHtmlBundleInBrowserOrShare(
+        context: Context,
+        filesByName: Map<String, String>,
+        entryFileName: String = "ddakchal_hub.html",
+        openChooserOnly: Boolean = false
+    ): Boolean {
+        if (filesByName.isEmpty()) return false
+        return runCatching {
+            val exportDir = File(context.cacheDir, "html_exports").apply { mkdirs() }
+            filesByName.forEach { (rawName, html) ->
+                val safeName = rawName.replace(Regex("[^a-zA-Z0-9._\\-가-힣]"), "_")
+                    .let { if (it.endsWith(".html", ignoreCase = true)) it else "$it.html" }
+                File(exportDir, safeName).writeText(html, Charsets.UTF_8)
+            }
+            val safeEntry = entryFileName.replace(Regex("[^a-zA-Z0-9._\\-가-힣]"), "_")
+                .let { if (it.endsWith(".html", ignoreCase = true)) it else "$it.html" }
+            val entryFile = File(exportDir, safeEntry)
+            val uri = FileProvider.getUriForFile(
+                context,
+                "${context.packageName}.fileprovider",
+                entryFile
+            )
+            if (!openChooserOnly) {
+                val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "text/html")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                val launched = runCatching {
+                    context.startActivity(viewIntent)
+                    true
+                }.getOrDefault(false)
+                if (launched) return true
+            }
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/html"
+                putExtra(Intent.EXTRA_SUBJECT, safeEntry)
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(shareIntent, "HTML 허브/파일 열기·공유"))
+            true
+        }.getOrDefault(false)
+    }
+
+    fun openExternalWebUrl(context: Context, url: String): Boolean {
+        val trimmed = url.trim()
+        if (!trimmed.startsWith("http://", ignoreCase = true) && !trimmed.startsWith("https://", ignoreCase = true)) {
+            return false
+        }
+        return runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(trimmed)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrElse {
+            showToastSafely(context, "웹 URL을 열 수 있는 브라우저 앱을 찾지 못했습니다.")
+            false
+        }
+    }
+
     private fun showToastSafely(context: Context, message: String) {
         runCatching {
             Toast.makeText(context.applicationContext, message, Toast.LENGTH_SHORT).show()
